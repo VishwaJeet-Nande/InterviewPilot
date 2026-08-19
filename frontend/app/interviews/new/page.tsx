@@ -2,40 +2,134 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { createClient } from "@/lib/supabase/client";
+
+const MAX_FILE_SIZE = 5 * 1024 * 1024;
 
 export default function NewInterviewPage() {
+  const router = useRouter();
+
   const [jobTitle, setJobTitle] = useState("");
   const [company, setCompany] = useState("");
   const [jobDescription, setJobDescription] = useState("");
-  const [resumeName, setResumeName] = useState("");
+  const [resumeFile, setResumeFile] = useState<File | null>(null);
+
   const [dragging, setDragging] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
   const canContinue =
     jobTitle.trim().length > 0 &&
     company.trim().length > 0 &&
-    jobDescription.trim().length > 50 &&
-    resumeName.length > 0;
+    jobDescription.trim().length >= 50 &&
+    resumeFile !== null;
 
   function handleFile(file: File | undefined) {
     if (!file) return;
 
-    const allowed = [
-      "application/pdf",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "application/msword",
-    ];
+    setError("");
 
-    if (allowed.includes(file.type) || file.name.toLowerCase().endsWith(".pdf")) {
-      setResumeName(file.name);
+    const extension = file.name.split(".").pop()?.toLowerCase();
+
+    if (!["pdf", "doc", "docx"].includes(extension || "")) {
+      setError("Please upload a PDF, DOC, or DOCX resume.");
+      return;
     }
+
+    if (file.size > MAX_FILE_SIZE) {
+      setError("Resume must be smaller than 5 MB.");
+      return;
+    }
+
+    setResumeFile(file);
   }
 
-  function handleSubmit() {
-    if (!canContinue) return;
+  async function handleSubmit() {
+    if (!canContinue || !resumeFile) return;
 
-    alert(
-      "Interview creation is ready. The AI analysis backend will be connected in the next milestone.",
-    );
+    setLoading(true);
+    setError("");
+
+    const supabase = createClient();
+
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError || !user) {
+      router.replace("/auth/login?next=/interviews/new");
+      return;
+    }
+
+    const extension =
+      resumeFile.name.split(".").pop()?.toLowerCase() || "pdf";
+
+    const filePath = `${user.id}/${crypto.randomUUID()}.${extension}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("resumes")
+      .upload(filePath, resumeFile, {
+        cacheControl: "3600",
+        upsert: false,
+        contentType: resumeFile.type || "application/octet-stream",
+      });
+
+    if (uploadError) {
+      setError(`Resume upload failed: ${uploadError.message}`);
+      setLoading(false);
+      return;
+    }
+
+    const { data: resume, error: resumeError } = await supabase
+      .from("resumes")
+      .insert({
+        user_id: user.id,
+        file_name: resumeFile.name,
+        file_path: filePath,
+        file_type: resumeFile.type,
+        file_size: resumeFile.size,
+      })
+      .select("id")
+      .single();
+
+    if (resumeError || !resume) {
+      await supabase.storage.from("resumes").remove([filePath]);
+
+      setError(
+        resumeError?.message || "Could not save resume information.",
+      );
+      setLoading(false);
+      return;
+    }
+
+    const { data: interview, error: interviewError } = await supabase
+      .from("interviews")
+      .insert({
+        user_id: user.id,
+        job_title: jobTitle.trim(),
+        company_name: company.trim(),
+        job_description: jobDescription.trim(),
+        resume_id: resume.id,
+        status: "created",
+      })
+      .select("id")
+      .single();
+
+    if (interviewError || !interview) {
+      await supabase.from("resumes").delete().eq("id", resume.id);
+      await supabase.storage.from("resumes").remove([filePath]);
+
+      setError(
+        interviewError?.message || "Could not create your interview.",
+      );
+      setLoading(false);
+      return;
+    }
+
+    router.replace(`/interviews/${interview.id}`);
+    router.refresh();
   }
 
   return (
@@ -73,9 +167,8 @@ export default function NewInterviewPage() {
           </h1>
 
           <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500">
-            Give InterviewPilot the role and your actual experience. We'll use
-            both to build a preparation plan around the interview you're
-            targeting.
+            Give InterviewPilot the role and your actual experience. Both will
+            become part of your personalized interview model.
           </p>
         </div>
 
@@ -133,27 +226,36 @@ export default function NewInterviewPage() {
                 </label>
 
                 <p className="mt-1 text-xs text-zinc-600">
-                  Paste the complete job description. More context means a
-                  better interview model.
+                  Paste the complete job description.
                 </p>
 
                 <textarea
                   id="job-description"
                   value={jobDescription}
-                  onChange={(event) => setJobDescription(event.target.value)}
+                  onChange={(event) =>
+                    setJobDescription(event.target.value)
+                  }
                   placeholder="Paste the job description here..."
                   rows={12}
                   className="input-field mt-3 resize-none px-4 py-3 text-sm leading-6"
                 />
 
-                <div className="mt-2 flex justify-between text-[11px] text-zinc-700">
-                  <span>
-                    {jobDescription.length < 50
-                      ? "Add more detail for accurate analysis."
-                      : "Job description looks good."}
+                <div className="mt-2 flex justify-between text-[11px]">
+                  <span
+                    className={
+                      jobDescription.length >= 50
+                        ? "text-emerald-500"
+                        : "text-zinc-700"
+                    }
+                  >
+                    {jobDescription.length >= 50
+                      ? "Job description looks good."
+                      : "Add at least 50 characters."}
                   </span>
 
-                  <span>{jobDescription.length} characters</span>
+                  <span className="text-zinc-700">
+                    {jobDescription.length} characters
+                  </span>
                 </div>
               </div>
 
@@ -163,8 +265,7 @@ export default function NewInterviewPage() {
                 </div>
 
                 <p className="mt-1 text-xs text-zinc-600">
-                  InterviewPilot uses your actual experience to generate
-                  realistic follow-up questions.
+                  PDF, DOC, or DOCX · Maximum 5 MB
                 </p>
 
                 <label
@@ -199,13 +300,15 @@ export default function NewInterviewPage() {
                     ↑
                   </div>
 
-                  {resumeName ? (
+                  {resumeFile ? (
                     <>
-                      <p className="mt-4 text-sm font-medium text-white">
-                        {resumeName}
+                      <p className="mt-4 max-w-full truncate text-sm font-medium text-white">
+                        {resumeFile.name}
                       </p>
+
                       <p className="mt-1 text-xs text-emerald-400">
-                        Resume selected
+                        Resume ready ·{" "}
+                        {(resumeFile.size / 1024 / 1024).toFixed(2)} MB
                       </p>
                     </>
                   ) : (
@@ -213,25 +316,32 @@ export default function NewInterviewPage() {
                       <p className="mt-4 text-sm font-medium text-zinc-300">
                         Drop your resume here
                       </p>
+
                       <p className="mt-1 text-xs text-zinc-600">
-                        or click to browse · PDF, DOC, DOCX
+                        or click to browse
                       </p>
                     </>
                   )}
                 </label>
               </div>
 
+              {error && (
+                <div className="rounded-xl border border-rose-400/15 bg-rose-400/[0.05] px-4 py-3 text-xs leading-5 text-rose-300">
+                  {error}
+                </div>
+              )}
+
               <button
                 type="button"
-                disabled={!canContinue}
+                disabled={!canContinue || loading}
                 onClick={handleSubmit}
                 className={`w-full rounded-xl px-5 py-3.5 text-sm font-semibold transition ${
-                  canContinue
+                  canContinue && !loading
                     ? "primary-button"
                     : "cursor-not-allowed bg-white/[0.06] text-zinc-600"
                 }`}
               >
-                Analyze my interview →
+                {loading ? "Creating your interview..." : "Create interview →"}
               </button>
             </div>
           </section>
@@ -257,7 +367,7 @@ export default function NewInterviewPage() {
                   [
                     "03",
                     "Preparation",
-                    "You receive a focused preparation roadmap.",
+                    "We build your focused preparation roadmap.",
                   ],
                   [
                     "04",
@@ -274,6 +384,7 @@ export default function NewInterviewPage() {
                       <p className="text-sm font-medium text-zinc-200">
                         {title}
                       </p>
+
                       <p className="mt-1 text-xs leading-5 text-zinc-600">
                         {description}
                       </p>
@@ -285,11 +396,12 @@ export default function NewInterviewPage() {
 
             <div className="rounded-2xl border border-emerald-400/10 bg-emerald-400/[0.025] p-6">
               <p className="text-xs font-medium text-emerald-300">
-                YOUR DATA
+                PRIVATE BY DEFAULT
               </p>
+
               <p className="mt-3 text-xs leading-5 text-zinc-600">
-                Your resume and interview information will be used to
-                personalize your preparation experience.
+                Your resume is stored in a private bucket and protected by
+                Supabase Row Level Security.
               </p>
             </div>
           </aside>
