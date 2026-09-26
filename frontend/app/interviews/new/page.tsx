@@ -6,6 +6,8 @@ import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
+const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
 export default function NewInterviewPage() {
   const router = useRouter();
@@ -128,8 +130,38 @@ export default function NewInterviewPage() {
       return;
     }
 
-    router.replace(`/interviews/${interview.id}`);
-    router.refresh();
+    try {
+  const dnaResponse = await fetch(
+    `${API_BASE_URL}/api/v1/interviews/${interview.id}/generate-dna`,
+    {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+      },
+    },
+  );
+
+  if (!dnaResponse.ok) {
+    const dnaError = await dnaResponse.json().catch(() => null);
+
+    throw new Error(
+      dnaError?.detail || "Interview DNA generation failed.",
+    );
+  }
+} catch (dnaError) {
+  setError(
+    dnaError instanceof Error
+      ? dnaError.message
+      : "Interview DNA generation failed.",
+  );
+
+  setLoading(false);
+  return;
+}
+
+router.replace(`/interviews/${interview.id}`);
+router.refresh();
+
   }
 
   return (
@@ -341,7 +373,7 @@ export default function NewInterviewPage() {
                     : "cursor-not-allowed bg-white/[0.06] text-zinc-600"
                 }`}
               >
-                {loading ? "Creating your interview..." : "Create interview →"}
+                {loading ? "Analyzing your interview..." : "Create interview →"}
               </button>
             </div>
           </section>

@@ -22,17 +22,19 @@ class InterviewTopic(BaseModel):
 
 
 class InterviewDNA(BaseModel):
-    role_fit_score: int = Field(ge=0, le=100)
-    skill_match_score: int = Field(ge=0, le=100)
-    experience_match_score: int = Field(ge=0, le=100)
-    technical_readiness_score: int = Field(ge=0, le=100)
+    overall_match: int = Field(ge=0, le=100)
+    technical_match: int = Field(ge=0, le=100)
+    backend_match: int = Field(ge=0, le=100)
+    ai_ml_match: int = Field(ge=0, le=100)
+    cloud_match: int = Field(ge=0, le=100)
+    database_match: int = Field(ge=0, le=100)
+    system_design_match: int = Field(ge=0, le=100)
+    behavioral_match: int = Field(ge=0, le=100)
 
-    strengths: list[str]
-    skill_gaps: list[SkillGap]
-    technical_focus: list[str]
-    likely_topics: list[InterviewTopic]
-    behavioral_focus: list[str]
-    risk_areas: list[str]
+    likely_focus: list[InterviewTopic]
+    high_risk_areas: list[str]
+    medium_risk_areas: list[str]
+    strong_areas: list[str]
 
 
 class InterviewAnalysisResponse(BaseModel):

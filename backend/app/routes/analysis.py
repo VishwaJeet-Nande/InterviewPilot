@@ -1,10 +1,11 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
+from app.services.interview_pipeline import (
+    generate_dna_for_interview,
+)
 from app.schemas.interview import (
-    InterviewAnalysisRequest,
     InterviewAnalysisResponse,
 )
-from app.services.interview_dna import generate_interview_dna
 
 
 router = APIRouter(
@@ -14,17 +15,35 @@ router = APIRouter(
 
 
 @router.post(
-    "/analyze",
+    "/{interview_id}/generate-dna",
     response_model=InterviewAnalysisResponse,
 )
-async def analyze_interview(
-    request: InterviewAnalysisRequest,
+async def generate_interview_dna(
+    interview_id: str,
 ) -> InterviewAnalysisResponse:
 
-    dna = generate_interview_dna(request)
+    try:
+        dna = await generate_dna_for_interview(
+            interview_id
+        )
 
-    return InterviewAnalysisResponse(
-        interview_id=request.interview_id,
-        status="ready",
-        dna=dna,
-    )
+        return InterviewAnalysisResponse(
+            interview_id=interview_id,
+            status="ready",
+            dna=dna,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "Interview DNA generation failed: "
+                f"{str(exc)}"
+            ),
+        ) from exc
