@@ -130,7 +130,7 @@ export default function ReadinessPage() {
   if (loading) {
     return (
       <main className="app-shell min-h-screen">
-        <div className="mx-auto max-w-6xl px-6 py-20">
+        <div className="mx-auto max-w-[1440px] px-6 py-20">
           <div className="animate-pulse">
             <div className="h-4 w-32 rounded bg-white/[0.06]" />
 
@@ -214,7 +214,7 @@ export default function ReadinessPage() {
   return (
     <main className="app-shell min-h-screen">
       <header className="glass sticky top-0 z-20 border-x-0 border-t-0">
-        <div className="mx-auto max-w-6xl px-6 py-3">
+        <div className="mx-auto max-w-[1440px] px-6 py-3">
           <div className="flex h-12 items-center justify-between">
             <Link
               href={`/interviews/${interviewId}/prepare`}
@@ -272,7 +272,7 @@ export default function ReadinessPage() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-6xl px-6 py-10 lg:py-14">
+      <div className="mx-auto max-w-[1440px] px-6 py-10 lg:py-14">
         {/* HEADER */}
 
         <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
