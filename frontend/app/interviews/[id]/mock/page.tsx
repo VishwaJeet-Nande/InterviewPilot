@@ -32,6 +32,14 @@ type Evaluation = {
   better_answer: string;
 };
 
+type SaveResponse = {
+  status: string;
+  interview_id: string;
+  answer_number: number;
+  final_score: number;
+  completed: boolean;
+};
+
 export default function MockInterviewPage() {
   const params = useParams();
   const interviewId = params.id as string;
@@ -62,6 +70,9 @@ export default function MockInterviewPage() {
 
   const [recordingSeconds, setRecordingSeconds] =
     useState(0);
+
+  const [recordedAudio, setRecordedAudio] =
+    useState<Blob | null>(null);
 
   const [finished, setFinished] =
     useState(false);
@@ -124,6 +135,7 @@ export default function MockInterviewPage() {
       setScores([]);
       setEvaluation(null);
       setAnswer("");
+      setRecordedAudio(null);
       setFinished(false);
     } catch (err) {
       setError(
@@ -189,30 +201,45 @@ export default function MockInterviewPage() {
         );
       }
 
-      setEvaluation(data);
-
-      await fetch(
+      const saveResponse = await fetch(
         `${API_BASE_URL}/api/v1/interviews/${interviewId}/mock/save`,
         {
-        method: "POST",
-        headers: {
-           "Content-Type": "application/json",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
             Accept: "application/json",
+          },
+          body: JSON.stringify({
+            question: question.question,
+            category: question.category,
+            difficulty: question.difficulty,
+            score: data.overall_score,
+            evaluation: data,
+          }),
         },
-        body: JSON.stringify({
-           question: question.question,
-           category: question.category,
-           difficulty: question.difficulty,
-           score: data.overall_score,
-           evaluation: data,
-         }),
-       },
-   );
+      );
 
-   setScores((previous) => [
-      ...previous,
-      data.overall_score,
-  ]);
+      const saveData =
+        (await saveResponse.json()) as
+          | SaveResponse
+          | { detail?: string };
+
+      if (!saveResponse.ok) {
+        throw new Error(
+          "detail" in saveData && saveData.detail
+            ? saveData.detail
+            : "Answer evaluation succeeded, but the result could not be saved.",
+        );
+      }
+
+      setEvaluation(data);
+
+      setScores((previous) => [
+        ...previous,
+        data.overall_score,
+      ]);
+
+      setRecordedAudio(null);
 
       if (data.transcript) {
         setAnswer(data.transcript);
@@ -245,14 +272,26 @@ export default function MockInterviewPage() {
 
     setAnswer("");
     setEvaluation(null);
+    setRecordedAudio(null);
     setError("");
   }
 
   async function startRecording() {
     setError("");
+    setRecordedAudio(null);
+    setAnswer("");
 
     if (
       !navigator.mediaDevices?.getUserMedia
+    ) {
+      setError(
+        "Voice recording is not supported by this browser.",
+      );
+      return;
+    }
+
+    if (
+      typeof MediaRecorder === "undefined"
     ) {
       setError(
         "Voice recording is not supported by this browser.",
@@ -279,7 +318,7 @@ export default function MockInterviewPage() {
         }
       };
 
-      recorder.onstop = async () => {
+      recorder.onstop = () => {
         const blob = new Blob(
           chunksRef.current,
           {
@@ -294,11 +333,8 @@ export default function MockInterviewPage() {
         );
 
         streamRef.current = null;
-
-        await submitAnswer(
-          undefined,
-          blob,
-        );
+        setRecordedAudio(blob);
+        chunksRef.current = [];
       };
 
       recorder.start();
@@ -334,6 +370,38 @@ export default function MockInterviewPage() {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
+  }
+
+  function cancelRecording() {
+    if (recorderRef.current) {
+      recorderRef.current.ondataavailable = null;
+      recorderRef.current.onstop = null;
+      recorderRef.current.stop();
+      recorderRef.current = null;
+    }
+
+    streamRef.current?.getTracks().forEach(
+      (track) => track.stop(),
+    );
+
+    streamRef.current = null;
+
+    chunksRef.current = [];
+    setRecordedAudio(null);
+    setRecording(false);
+    setRecordingSeconds(0);
+    setError("");
+  }
+
+  async function sendRecordedAudio() {
+    if (!recordedAudio || evaluating) {
+      return;
+    }
+
+    await submitAnswer(
+      undefined,
+      recordedAudio,
+    );
   }
 
   const currentQuestion =
@@ -544,7 +612,9 @@ export default function MockInterviewPage() {
                   setAnswer(event.target.value)
                 }
                 disabled={
-                  evaluating || recording
+                  evaluating ||
+                  recording ||
+                  !!recordedAudio
                 }
                 rows={9}
                 placeholder="Answer as if you're speaking directly to the interviewer..."
@@ -557,6 +627,7 @@ export default function MockInterviewPage() {
                   disabled={
                     evaluating ||
                     recording ||
+                    !!recordedAudio ||
                     !answer.trim()
                   }
                   onClick={() =>
@@ -569,7 +640,8 @@ export default function MockInterviewPage() {
                     : "Submit answer"}
                 </button>
 
-                {!recording ? (
+                {!recording &&
+                !recordedAudio ? (
                   <button
                     type="button"
                     disabled={evaluating}
@@ -578,7 +650,7 @@ export default function MockInterviewPage() {
                   >
                     🎙 Answer with voice
                   </button>
-                ) : (
+                ) : recording ? (
                   <button
                     type="button"
                     onClick={stopRecording}
@@ -587,8 +659,64 @@ export default function MockInterviewPage() {
                     ● Stop recording{" "}
                     {recordingSeconds}s
                   </button>
-                )}
+                ) : null}
               </div>
+
+              {recording && (
+                <div className="mt-5 rounded-xl border border-violet-400/15 bg-violet-400/[0.04] p-4">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <p className="text-xs font-semibold text-violet-300">
+                        Recording in progress
+                      </p>
+
+                      <p className="mt-1 text-xs text-zinc-500">
+                        Stop when you're finished. You can
+                        review your recording before sending it.
+                      </p>
+                    </div>
+
+                    <span className="shrink-0 text-sm font-semibold text-violet-300">
+                      {recordingSeconds}s
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {recordedAudio && !recording && (
+                <div className="mt-5 rounded-xl border border-violet-400/15 bg-violet-400/[0.04] p-5">
+                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-300">
+                    Voice answer ready
+                  </p>
+
+                  <p className="mt-2 text-sm text-zinc-400">
+                    Your recording is ready. Send it for AI
+                    evaluation or cancel and record again.
+                  </p>
+
+                  <div className="mt-4 flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      disabled={evaluating}
+                      onClick={cancelRecording}
+                      className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-6 py-3 text-sm font-semibold text-zinc-300 hover:bg-white/[0.06] disabled:opacity-40"
+                    >
+                      ✕ Cancel
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={evaluating}
+                      onClick={sendRecordedAudio}
+                      className="primary-button rounded-xl px-6 py-3 text-sm font-semibold disabled:opacity-40"
+                    >
+                      {evaluating
+                        ? "Evaluating..."
+                        : "Send recording →"}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {error && (
                 <div className="mt-5 rounded-xl border border-rose-400/15 bg-rose-400/[0.05] p-4 text-xs text-rose-300">
