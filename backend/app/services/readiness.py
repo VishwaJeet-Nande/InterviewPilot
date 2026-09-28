@@ -2,6 +2,7 @@ from typing import Optional, Union
 
 from app.core.supabase import supabase
 
+
 def _clamp(
     value: Optional[Union[int, float]],
 ) -> int:
@@ -109,15 +110,291 @@ def _unique_strings(
     return result
 
 
+def _calculate_preparation_progress(
+    attempts: list[dict],
+) -> dict:
+    if not attempts:
+        return {
+            "score": 0,
+            "questions_practiced": 0,
+            "average_score": 0,
+            "completion_percentage": 0,
+        }
+
+    unique_questions = {
+        str(attempt.get("question", "")).strip()
+        for attempt in attempts
+        if attempt.get("question")
+    }
+
+    questions_practiced = len(
+        unique_questions
+    )
+
+    scores = [
+        _clamp(attempt.get("score"))
+        for attempt in attempts
+        if attempt.get("score") is not None
+    ]
+
+    average_score = (
+        round(
+            sum(scores) / len(scores)
+        )
+        if scores
+        else 0
+    )
+
+    completion_percentage = min(
+        100,
+        round(
+            (questions_practiced / 10) * 100
+        ),
+    )
+
+    preparation_score = round(
+        completion_percentage * 0.50
+        + average_score * 0.50
+    )
+
+    return {
+        "score": _clamp(
+            preparation_score
+        ),
+        "questions_practiced": (
+            questions_practiced
+        ),
+        "average_score": average_score,
+        "completion_percentage": (
+            completion_percentage
+        ),
+    }
+
+
+def _get_practice_signal(
+    preparation_progress: dict,
+) -> str:
+    questions = preparation_progress[
+        "questions_practiced"
+    ]
+
+    average = preparation_progress[
+        "average_score"
+    ]
+
+    completion = preparation_progress[
+        "completion_percentage"
+    ]
+
+    if questions == 0:
+        return "not_started"
+
+    if average < 55:
+        return "low_quality"
+
+    if average < 70:
+        return "developing"
+
+    if completion < 50:
+        return "limited_coverage"
+
+    if average >= 80 and completion >= 70:
+        return "strong"
+
+    return "progressing"
+
+
+def _build_recommended_actions(
+    *,
+    priority_gaps: list[str],
+    weak_areas: list[dict],
+    preparation_progress: dict,
+    mock_completed: bool,
+    mock_score: int,
+    dna: dict,
+) -> list[str]:
+    actions: list[str] = []
+
+    practice_signal = _get_practice_signal(
+        preparation_progress
+    )
+
+    questions = preparation_progress[
+        "questions_practiced"
+    ]
+
+    average = preparation_progress[
+        "average_score"
+    ]
+
+    completion = preparation_progress[
+        "completion_percentage"
+    ]
+
+    # --------------------------------------------------
+    # 1. Missing mock milestone
+    # --------------------------------------------------
+
+    if not mock_completed:
+        actions.append(
+            "Complete a full AI mock interview so "
+            "InterviewPilot can measure your demonstrated "
+            "interview performance."
+        )
+
+    # --------------------------------------------------
+    # 2. Practice quality
+    # --------------------------------------------------
+
+    if practice_signal == "not_started":
+        actions.append(
+            "Start personalized practice with at least "
+            "5 role-specific questions before relying on "
+            "your readiness score."
+        )
+
+    elif practice_signal == "low_quality":
+        actions.append(
+            f"Improve answer quality before increasing "
+            f"practice volume. Your current practice "
+            f"average is {average}/100."
+        )
+
+    elif practice_signal == "developing":
+        actions.append(
+            f"Keep practicing until your answer average "
+            f"moves above 70/100. Current average: "
+            f"{average}/100."
+        )
+
+    elif practice_signal == "limited_coverage":
+        actions.append(
+            f"Expand your question coverage. You have "
+            f"practiced {questions} unique questions "
+            f"({completion}% coverage)."
+        )
+
+    elif practice_signal == "strong":
+        actions.append(
+            "Maintain your practice performance and "
+            "validate consistency with another mock interview."
+        )
+
+    # --------------------------------------------------
+    # 3. Interview DNA gaps
+    # --------------------------------------------------
+
+    for gap in priority_gaps[:3]:
+        actions.append(
+            f"Target the identified gap: {gap}."
+        )
+
+    # --------------------------------------------------
+    # 4. Weakest technical area
+    # --------------------------------------------------
+
+    if weak_areas:
+        weakest = weak_areas[0]
+
+        actions.append(
+            f"Raise {weakest['name']} from "
+            f"{weakest['score']}/100 through targeted "
+            f"questions and review."
+        )
+
+    # --------------------------------------------------
+    # 5. Completed mock performance
+    # --------------------------------------------------
+
+    if mock_completed:
+        if mock_score < 55:
+            actions.append(
+                f"Repeat the mock after focused preparation. "
+                f"Your current mock score is {mock_score}/100."
+            )
+
+        elif mock_score < 75:
+            actions.append(
+                f"Improve mock-interview consistency. "
+                f"Your latest mock score is {mock_score}/100."
+            )
+
+        elif mock_score >= 85:
+            actions.append(
+                "Run another mock under realistic conditions "
+                "to validate that your strong performance is consistent."
+            )
+
+    # --------------------------------------------------
+    # 6. Specific DNA dimensions
+    # --------------------------------------------------
+
+    if dna.get(
+        "cloud_match",
+        100,
+    ) < 60:
+        actions.append(
+            "Strengthen the cloud technologies specifically "
+            "mentioned in the target job description."
+        )
+
+    if dna.get(
+        "system_design_match",
+        100,
+    ) < 65:
+        actions.append(
+            "Practice system-design questions using "
+            "architecture patterns relevant to the target role."
+        )
+
+    if dna.get(
+        "behavioral_match",
+        100,
+    ) < 65:
+        actions.append(
+            "Prepare structured behavioral stories using "
+            "STAR-style answer framing."
+        )
+
+    if dna.get(
+        "ai_ml_match",
+        100,
+    ) < 65:
+        actions.append(
+            "Review the AI/ML concepts and technologies "
+            "explicitly required by the role."
+        )
+
+    actions = _unique_strings(
+        actions
+    )
+
+    if not actions:
+        actions.append(
+            "Run another mock interview to validate "
+            "consistency across questions."
+        )
+
+    return actions[:6]
+
+
 async def calculate_readiness(
     interview_id: str,
 ) -> dict:
+    # --------------------------------------------------
+    # INTERVIEW
+    # --------------------------------------------------
+
     interview_result = (
-        supabase.table("interviews")
+        supabase
+        .table("interviews")
         .select(
             "id, job_title, company_name"
         )
-        .eq("id", interview_id)
+        .eq(
+            "id",
+            interview_id,
+        )
         .single()
         .execute()
     )
@@ -129,8 +406,13 @@ async def calculate_readiness(
             "Interview not found."
         )
 
+    # --------------------------------------------------
+    # INTERVIEW DNA
+    # --------------------------------------------------
+
     dna_result = (
-        supabase.table("interview_dna")
+        supabase
+        .table("interview_dna")
         .select(
             "overall_match, "
             "technical_match, "
@@ -159,10 +441,13 @@ async def calculate_readiness(
             "Interview DNA has not been generated yet."
         )
 
+    # --------------------------------------------------
+    # MOCK
+    # --------------------------------------------------
+
     mock_result = (
-        supabase.table(
-            "mock_interview_sessions"
-        )
+        supabase
+        .table("mock_interview_sessions")
         .select(
             "scores, evaluations, "
             "final_score, completed"
@@ -177,40 +462,87 @@ async def calculate_readiness(
 
     mock = mock_result.data or {}
 
-    dna_score = _clamp(
-        dna.get("overall_match")
-    )
-
-    mock_score = _clamp(
-        mock.get("final_score")
-    )
-
     mock_completed = bool(
         mock.get("completed")
     )
 
-    scores = mock.get("scores") or []
+    # IMPORTANT:
+    # Never expose partial mock scores as a
+    # readiness signal.
+    #
+    # An incomplete mock is not an assessment.
+    # The score becomes meaningful only after
+    # the mock session is completed.
+    mock_score = 0
 
-    evaluated_scores = [
-        _clamp(score)
-        for score in scores
-        if score is not None
-    ]
-
-    if (
-        evaluated_scores
-        and not mock_score
-    ):
+    if mock_completed:
         mock_score = _clamp(
-            sum(evaluated_scores)
-            / len(evaluated_scores)
+            mock.get("final_score")
         )
 
-    # Preparation progress is not persisted
-    # separately yet. Therefore we use the
-    # Interview DNA score as the preparation
-    # baseline rather than inventing progress.
-    preparation_score = dna_score
+        scores = mock.get("scores") or []
+
+        evaluated_scores = [
+            _clamp(score)
+            for score in scores
+            if score is not None
+        ]
+
+        if (
+            evaluated_scores
+            and not mock_score
+        ):
+            mock_score = _clamp(
+                sum(evaluated_scores)
+                / len(evaluated_scores)
+            )
+
+    # --------------------------------------------------
+    # PRACTICE
+    # --------------------------------------------------
+
+    practice_result = (
+        supabase
+        .table("practice_attempts")
+        .select(
+            "question, score, answer_mode, created_at"
+        )
+        .eq(
+            "interview_id",
+            interview_id,
+        )
+        .order(
+            "created_at",
+            desc=True,
+        )
+        .execute()
+    )
+
+    practice_attempts = (
+        practice_result.data or []
+    )
+
+    preparation_progress = (
+        _calculate_preparation_progress(
+            practice_attempts
+        )
+    )
+
+    # --------------------------------------------------
+    # BASE SCORES
+    # --------------------------------------------------
+
+    dna_score = _clamp(
+        dna.get("overall_match")
+    )
+
+    preparation_score = (
+        preparation_progress["score"]
+    )
+
+    # --------------------------------------------------
+    # READINESS FORMULA
+    # --------------------------------------------------
 
     if (
         mock_completed
@@ -231,6 +563,10 @@ async def calculate_readiness(
     readiness_score = _clamp(
         readiness_score
     )
+
+    # --------------------------------------------------
+    # DNA SIGNALS
+    # --------------------------------------------------
 
     high_risk = _unique_strings(
         dna.get("high_risk_areas")
@@ -253,6 +589,10 @@ async def calculate_readiness(
 
     strengths = strong_areas[:6]
 
+    # --------------------------------------------------
+    # TECHNICAL AREAS
+    # --------------------------------------------------
+
     areas = _get_dna_areas(
         dna
     )
@@ -262,68 +602,26 @@ async def calculate_readiness(
         key=lambda area: area["score"],
     )
 
-    recommended_actions: list[str] = []
+    # --------------------------------------------------
+    # INTELLIGENT ACTION ENGINE
+    # --------------------------------------------------
 
-    for gap in priority_gaps[:3]:
-        recommended_actions.append(
-            f"Practice and review: {gap}"
+    recommended_actions = (
+        _build_recommended_actions(
+            priority_gaps=priority_gaps,
+            weak_areas=weak_areas,
+            preparation_progress=(
+                preparation_progress
+            ),
+            mock_completed=mock_completed,
+            mock_score=mock_score,
+            dna=dna,
         )
+    )
 
-    if weak_areas:
-        weakest = weak_areas[0]
-
-        recommended_actions.append(
-            f"Raise your "
-            f"{weakest['name']} readiness "
-            f"from {weakest['score']}/100 "
-            f"through targeted practice."
-        )
-
-    if (
-        mock_completed
-        and mock_score < 75
-    ):
-        recommended_actions.append(
-            "Repeat the mock interview and "
-            "focus on answer structure, "
-            "completeness, and technical depth."
-        )
-
-    elif not mock_completed:
-        recommended_actions.append(
-            "Complete a full mock interview "
-            "so readiness includes demonstrated "
-            "interview performance."
-        )
-
-    if dna.get(
-        "cloud_match",
-        100,
-    ) < 60:
-        recommended_actions.append(
-            "Strengthen the cloud technologies "
-            "specifically mentioned in the job description."
-        )
-
-    if dna.get(
-        "system_design_match",
-        100,
-    ) < 65:
-        recommended_actions.append(
-            "Practice system-design questions "
-            "using architecture patterns relevant "
-            "to the target role."
-        )
-
-    if not recommended_actions:
-        recommended_actions.append(
-            "Run another mock interview "
-            "to validate consistency across questions."
-        )
-
-    recommended_actions = _unique_strings(
-        recommended_actions
-    )[:6]
+    # --------------------------------------------------
+    # SUMMARY
+    # --------------------------------------------------
 
     job_title = (
         interview.get("job_title")
@@ -354,6 +652,22 @@ async def calculate_readiness(
             "make this score more representative."
         )
 
+    if (
+        preparation_progress["questions_practiced"]
+        > 0
+    ):
+        summary += (
+            f" You have practiced "
+            f"{preparation_progress['questions_practiced']} "
+            f"unique questions with an average answer "
+            f"score of "
+            f"{preparation_progress['average_score']}/100."
+        )
+
+    # --------------------------------------------------
+    # RESPONSE
+    # --------------------------------------------------
+
     return {
         "interview_id": interview_id,
         "job_title": job_title,
@@ -367,6 +681,26 @@ async def calculate_readiness(
             "interview_dna": dna_score,
             "mock_interview": mock_score,
             "preparation": preparation_score,
+        },
+        "preparation_progress": {
+            "score": preparation_progress[
+                "score"
+            ],
+            "questions_practiced": (
+                preparation_progress[
+                    "questions_practiced"
+                ]
+            ),
+            "average_score": (
+                preparation_progress[
+                    "average_score"
+                ]
+            ),
+            "completion_percentage": (
+                preparation_progress[
+                    "completion_percentage"
+                ]
+            ),
         },
         "strengths": strengths,
         "priority_gaps": priority_gaps,
