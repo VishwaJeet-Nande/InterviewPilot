@@ -38,3 +38,19 @@ class AnswerEvaluation(BaseModel):
     improvements: list[str]
     missing_concepts: list[str]
     better_answer: str
+
+
+class PracticeAttemptSaveRequest(BaseModel):
+    module_id: str
+    question: str
+    answer_mode: str
+    score: int = Field(ge=0, le=100)
+    evaluation: AnswerEvaluation
+
+
+class PracticeProgress(BaseModel):
+    score: int = Field(ge=0, le=100)
+    questions_practiced: int = Field(ge=0)
+    total_questions: int = Field(ge=0)
+    completion_percentage: int = Field(ge=0, le=100)
+    average_score: int = Field(ge=0, le=100)
