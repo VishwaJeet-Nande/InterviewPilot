@@ -23,7 +23,9 @@ RESUME_BUCKET = "resumes"
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
 
-async def _get_interview_context(interview_id: str):
+async def _get_interview_context(
+    interview_id: str,
+):
     interview_result = (
         supabase
         .table("interviews")
@@ -39,7 +41,9 @@ async def _get_interview_context(interview_id: str):
     interview = interview_result.data
 
     if not interview:
-        raise ValueError("Interview not found.")
+        raise ValueError(
+            "Interview not found."
+        )
 
     dna_result = (
         supabase
@@ -51,7 +55,10 @@ async def _get_interview_context(interview_id: str):
             "likely_focus, high_risk_areas, "
             "medium_risk_areas, strong_areas"
         )
-        .eq("interview_id", interview_id)
+        .eq(
+            "interview_id",
+            interview_id,
+        )
         .single()
         .execute()
     )
@@ -66,8 +73,13 @@ async def _get_interview_context(interview_id: str):
     resume_result = (
         supabase
         .table("resumes")
-        .select("file_path, file_name")
-        .eq("id", interview["resume_id"])
+        .select(
+            "file_path, file_name"
+        )
+        .eq(
+            "id",
+            interview["resume_id"],
+        )
         .single()
         .execute()
     )
@@ -75,18 +87,28 @@ async def _get_interview_context(interview_id: str):
     resume = resume_result.data
 
     if not resume:
-        raise ValueError("Resume record not found.")
+        raise ValueError(
+            "Resume record not found."
+        )
 
     file_bytes = (
         supabase
         .storage
         .from_(RESUME_BUCKET)
-        .download(resume["file_path"])
+        .download(
+            resume["file_path"]
+        )
     )
 
-    resume_text = extract_pdf_text(file_bytes)
+    resume_text = extract_pdf_text(
+        file_bytes
+    )
 
-    return interview, dna, resume_text
+    return (
+        interview,
+        dna,
+        resume_text,
+    )
 
 
 async def _search_youtube(
@@ -101,7 +123,9 @@ async def _search_youtube(
     if not YOUTUBE_API_KEY:
         return [
             YouTubeResource(
-                title=f"Search YouTube: {query}",
+                title=(
+                    f"Search YouTube: {query}"
+                ),
                 channel="YouTube",
                 url=fallback_url,
                 thumbnail="",
@@ -135,7 +159,9 @@ async def _search_youtube(
     except Exception:
         return [
             YouTubeResource(
-                title=f"Search YouTube: {query}",
+                title=(
+                    f"Search YouTube: {query}"
+                ),
                 channel="YouTube",
                 url=fallback_url,
                 thumbnail="",
@@ -144,13 +170,20 @@ async def _search_youtube(
 
     resources = []
 
-    for item in data.get("items", []):
+    for item in data.get(
+        "items",
+        [],
+    ):
         video_id = (
-            item.get("id", {})
+            item
+            .get("id", {})
             .get("videoId")
         )
 
-        snippet = item.get("snippet", {})
+        snippet = item.get(
+            "snippet",
+            {}
+        )
 
         if not video_id:
             continue
@@ -171,9 +204,18 @@ async def _search_youtube(
                 ),
                 thumbnail=(
                     snippet
-                    .get("thumbnails", {})
-                    .get("medium", {})
-                    .get("url", "")
+                    .get(
+                        "thumbnails",
+                        {},
+                    )
+                    .get(
+                        "medium",
+                        {},
+                    )
+                    .get(
+                        "url",
+                        "",
+                    )
                 ),
             )
         )
@@ -181,7 +223,9 @@ async def _search_youtube(
     if not resources:
         resources.append(
             YouTubeResource(
-                title=f"Search YouTube: {query}",
+                title=(
+                    f"Search YouTube: {query}"
+                ),
                 channel="YouTube",
                 url=fallback_url,
                 thumbnail="",
@@ -456,3 +500,72 @@ QUESTION:
     return AnswerEvaluation.model_validate_json(
         response.text
     )
+
+
+async def save_practice_attempt(
+    *,
+    interview_id: str,
+    module_id: str,
+    question: str,
+    answer_mode: str,
+    score: int,
+    evaluation,
+) -> dict:
+
+    if answer_mode not in {
+        "text",
+        "voice",
+    }:
+        raise ValueError(
+            "Answer mode must be 'text' or 'voice'."
+        )
+
+    if not question.strip():
+        raise ValueError(
+            "Practice question is required."
+        )
+
+    if score < 0 or score > 100:
+        raise ValueError(
+            "Practice score must be between 0 and 100."
+        )
+
+    # Convert Pydantic AnswerEvaluation into
+    # a JSON-serializable dictionary before
+    # sending it to Supabase.
+    if isinstance(evaluation, AnswerEvaluation):
+        evaluation_data = evaluation.model_dump(
+            mode="json"
+        )
+    elif isinstance(evaluation, dict):
+        evaluation_data = evaluation
+    else:
+        raise ValueError(
+            "Practice evaluation has an invalid format."
+        )
+
+    result = (
+        supabase
+        .table("practice_attempts")
+        .insert(
+            {
+                "interview_id": interview_id,
+                "module_id": module_id,
+                "question": question,
+                "answer_mode": answer_mode,
+                "score": score,
+                "evaluation": evaluation_data,
+            }
+        )
+        .execute()
+    )
+
+    if not result.data:
+        raise RuntimeError(
+            "Practice attempt was not saved."
+        )
+
+    return {
+        "status": "saved",
+        "attempt": result.data[0],
+    }
