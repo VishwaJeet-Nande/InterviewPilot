@@ -21,15 +21,25 @@ type ReadinessResponse = {
   readiness_score: number;
   level: string;
   summary: string;
+
   breakdown: {
     interview_dna: number;
     mock_interview: number;
     preparation: number;
   };
+
+  preparation_progress: {
+    score: number;
+    questions_practiced: number;
+    average_score: number;
+    completion_percentage: number;
+  };
+
   strengths: string[];
   priority_gaps: string[];
   recommended_actions: string[];
   areas: ReadinessArea[];
+
   mock_score: number;
   dna_score: number;
   mock_completed: boolean;
@@ -49,12 +59,144 @@ function getScoreLabel(score: number) {
   return "Needs Work";
 }
 
+function getPracticeHref(
+  interviewId: string,
+  areaName?: string,
+) {
+  if (!areaName) {
+    return `/interviews/${interviewId}/prepare/practice`;
+  }
+
+  return `/interviews/${interviewId}/prepare/practice?module=${encodeURIComponent(
+    areaName,
+  )}`;
+}
+
+function getNextAction(
+  data: ReadinessResponse,
+  weakestArea: ReadinessArea | null,
+) {
+  const progress =
+    data.preparation_progress;
+
+  /*
+   * Before mock completion, the mock is the
+   * primary missing signal.
+   */
+  if (!data.mock_completed) {
+    return {
+      eyebrow: "Highest priority",
+      title: "Complete your AI mock interview",
+      description:
+        "You have not yet demonstrated your interview performance under realistic conditions.",
+      href: `/interviews/${data.interview_id}/mock`,
+      button: "Start Mock Interview →",
+    };
+  }
+
+  /*
+   * Once the mock exists, practice becomes
+   * the next major signal if there is no activity.
+   */
+  if (
+    progress.questions_practiced === 0
+  ) {
+    return {
+      eyebrow: "Highest priority",
+      title: "Start personalized practice",
+      description:
+        "Build a practice baseline before relying on your readiness score.",
+      href: getPracticeHref(
+        data.interview_id,
+        weakestArea?.name,
+      ),
+      button: weakestArea
+        ? `Practice ${weakestArea.name} →`
+        : "Start Practice →",
+    };
+  }
+
+  /*
+   * If practice exists but answer quality is
+   * below 70, send the candidate back to practice.
+   */
+  if (
+    progress.average_score < 70
+  ) {
+    return {
+      eyebrow: "Highest priority",
+      title: "Improve answer quality",
+      description: `Your current practice average is ${progress.average_score}/100. Focus on stronger structure, completeness, and technical depth.`,
+      href: getPracticeHref(
+        data.interview_id,
+        weakestArea?.name,
+      ),
+      button: weakestArea
+        ? `Practice ${weakestArea.name} →`
+        : "Practice Weak Answers →",
+    };
+  }
+
+  /*
+   * If Interview DNA has explicit priority gaps,
+   * target the first gap.
+   */
+  if (
+    data.priority_gaps.length > 0
+  ) {
+    const priorityGap =
+      data.priority_gaps[0];
+
+    return {
+      eyebrow: "Priority gap",
+      title: priorityGap,
+      description:
+        "This area was identified by your Interview DNA as a preparation risk.",
+      href: getPracticeHref(
+        data.interview_id,
+        priorityGap,
+      ),
+      button: `Practice ${priorityGap} →`,
+    };
+  }
+
+  /*
+   * Otherwise target the weakest technical
+   * readiness area.
+   */
+  if (weakestArea) {
+    return {
+      eyebrow: "Weakest signal",
+      title: weakestArea.name,
+      description: `${weakestArea.name} is currently your lowest alignment area at ${weakestArea.score}/100.`,
+      href: getPracticeHref(
+        data.interview_id,
+        weakestArea.name,
+      ),
+      button: `Target ${weakestArea.name} →`,
+    };
+  }
+
+  return {
+    eyebrow: "Next step",
+    title: "Validate consistency",
+    description:
+      "Your current signals are healthy. Run another mock interview to test consistency.",
+    href: `/interviews/${data.interview_id}/mock`,
+    button: "Run Another Mock →",
+  };
+}
+
 export default function ReadinessPage() {
   const params = useParams();
-  const interviewId = params.id as string;
+
+  const interviewId =
+    params.id as string;
 
   const [data, setData] =
-    useState<ReadinessResponse | null>(null);
+    useState<ReadinessResponse | null>(
+      null,
+    );
 
   const [loading, setLoading] =
     useState(true);
@@ -192,27 +334,42 @@ export default function ReadinessPage() {
   const signals = [
     {
       label: "Interview DNA",
-      value: data.breakdown.interview_dna,
+      value:
+        data.breakdown.interview_dna,
       description:
         "How closely your resume and skills align with the role.",
     },
     {
       label: "Mock Interview",
-      value: data.breakdown.mock_interview,
-      description: data.mock_completed
-        ? "Your demonstrated performance across the mock interview."
-        : "Not included yet because the mock interview is incomplete.",
+      value:
+        data.breakdown.mock_interview,
+      description:
+        data.mock_completed
+          ? "Your demonstrated performance across the mock interview."
+          : "Not included yet because the mock interview is incomplete.",
     },
     {
       label: "Preparation",
-      value: data.breakdown.preparation,
+      value:
+        data.breakdown.preparation,
       description:
-        "Your current preparation baseline.",
+        "Your current practice coverage and answer quality.",
     },
   ];
 
+  const nextAction =
+    getNextAction(
+      data,
+      weakestArea,
+    );
+
+  const progress =
+    data.preparation_progress;
+
   return (
     <main className="app-shell min-h-screen">
+      {/* HEADER */}
+
       <header className="glass sticky top-0 z-20 border-x-0 border-t-0">
         <div className="mx-auto max-w-[1440px] px-6 py-3">
           <div className="flex h-12 items-center justify-between">
@@ -240,24 +397,26 @@ export default function ReadinessPage() {
             </button>
           </div>
 
+          {/* PRODUCT NAVIGATION */}
+
           <nav className="flex flex-wrap gap-2 border-t border-white/[0.05] py-3">
             <Link
               href={`/interviews/${interviewId}/prepare`}
-              className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-xs text-zinc-400 hover:text-white"
+              className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-xs text-zinc-400 transition hover:border-violet-400/20 hover:bg-violet-400/[0.05] hover:text-white"
             >
               Preparation Overview
             </Link>
 
             <Link
               href={`/interviews/${interviewId}/prepare/practice`}
-              className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-xs text-zinc-400 hover:text-white"
+              className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-xs text-zinc-400 transition hover:border-violet-400/20 hover:bg-violet-400/[0.05] hover:text-white"
             >
               Practice Answers
             </Link>
 
             <Link
               href={`/interviews/${interviewId}/mock`}
-              className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-xs text-zinc-400 hover:text-white"
+              className="rounded-lg border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-xs text-zinc-400 transition hover:border-violet-400/20 hover:bg-violet-400/[0.05] hover:text-white"
             >
               Mock Interview
             </Link>
@@ -286,8 +445,8 @@ export default function ReadinessPage() {
             </h1>
 
             <p className="mt-4 max-w-3xl text-sm leading-7 text-zinc-500">
-              A combined view of your role alignment,
-              preparation baseline, and demonstrated
+              A live assessment of your role alignment,
+              preparation activity, and demonstrated
               interview performance.
             </p>
 
@@ -335,7 +494,9 @@ export default function ReadinessPage() {
                         data.readiness_score,
                       )}`}
                     >
-                      {data.readiness_score}
+                      {
+                        data.readiness_score
+                      }
                     </span>
 
                     <span className="pb-3 text-sm text-zinc-600">
@@ -368,91 +529,186 @@ export default function ReadinessPage() {
 
           {/* NEXT ACTION */}
 
-          <div className="card p-8">
-            <p className="text-xs uppercase tracking-[0.16em] text-zinc-600">
-              What should I do next?
-            </p>
+          <div className="card relative overflow-hidden p-8">
+            <div className="pointer-events-none absolute -right-20 -top-20 h-48 w-48 rounded-full bg-violet-500/[0.06] blur-3xl" />
 
-            {data.mock_completed ? (
-              <>
-                <div className="mt-5 rounded-xl border border-emerald-400/10 bg-emerald-400/[0.03] p-5">
-                  <p className="text-xs font-semibold text-emerald-300">
-                    Mock interview completed
-                  </p>
+            <div className="relative">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-300">
+                {nextAction.eyebrow}
+              </p>
 
-                  <p className="mt-2 text-2xl font-semibold">
-                    {data.mock_score}
-                    <span className="ml-1 text-sm text-zinc-600">
-                      /100
+              <h2 className="mt-4 text-2xl font-semibold">
+                {nextAction.title}
+              </h2>
+
+              <p className="mt-3 text-sm leading-6 text-zinc-500">
+                {nextAction.description}
+              </p>
+
+              <Link
+                href={nextAction.href}
+                className="primary-button mt-6 block rounded-xl px-5 py-3 text-center text-sm font-semibold"
+              >
+                {nextAction.button}
+              </Link>
+
+              {data.mock_completed && (
+                <div className="mt-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-zinc-600">
+                      Latest mock
                     </span>
-                  </p>
 
-                  <p className="mt-2 text-xs leading-5 text-zinc-500">
-                    Your readiness now includes actual
-                    interview performance.
-                  </p>
-                </div>
-
-                {weakestArea && (
-                  <div className="mt-4 rounded-xl border border-amber-400/10 bg-amber-400/[0.03] p-5">
-                    <p className="text-xs font-semibold text-amber-300">
-                      Weakest alignment area
-                    </p>
-
-                    <p className="mt-2 text-sm font-semibold">
-                      {weakestArea.name}
-                    </p>
-
-                    <p
-                      className={`mt-1 text-2xl font-semibold ${getScoreColor(
-                        weakestArea.score,
+                    <span
+                      className={`text-lg font-semibold ${getScoreColor(
+                        data.mock_score,
                       )}`}
                     >
-                      {weakestArea.score}
-                      <span className="ml-1 text-xs text-zinc-600">
-                        /100
-                      </span>
-                    </p>
+                      {data.mock_score}/100
+                    </span>
                   </div>
-                )}
-
-                <Link
-                  href={`/interviews/${interviewId}/prepare/practice`}
-                  className="primary-button mt-5 block rounded-xl px-5 py-3 text-center text-sm font-semibold"
-                >
-                  Practice Weakest Area →
-                </Link>
-              </>
-            ) : (
-              <>
-                <div className="mt-5 rounded-xl border border-amber-400/10 bg-amber-400/[0.04] p-5">
-                  <p className="text-xs font-semibold text-amber-300">
-                    One signal is still missing
-                  </p>
-
-                  <p className="mt-2 text-sm font-semibold">
-                    Complete your AI mock interview
-                  </p>
-
-                  <p className="mt-2 text-xs leading-5 text-zinc-500">
-                    Answer six role-specific questions
-                    so InterviewPilot can measure your
-                    actual interview performance.
-                  </p>
                 </div>
-
-                <Link
-                  href={`/interviews/${interviewId}/mock`}
-                  className="primary-button mt-5 block rounded-xl px-5 py-3 text-center text-sm font-semibold"
-                >
-                  Complete Mock Interview →
-                </Link>
-              </>
-            )}
+              )}
+            </div>
           </div>
         </section>
 
-        {/* BREAKDOWN */}
+        {/* PREPARATION PROGRESS */}
+
+        <section className="mt-10">
+          <div className="mb-5">
+            <p className="text-xs uppercase tracking-[0.16em] text-zinc-600">
+              Preparation intelligence
+            </p>
+
+            <h2 className="mt-2 text-2xl font-semibold">
+              Are you actually practicing enough?
+            </h2>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="card p-6">
+              <p className="text-xs text-zinc-600">
+                Preparation score
+              </p>
+
+              <p
+                className={`mt-3 text-3xl font-semibold ${getScoreColor(
+                  progress.score,
+                )}`}
+              >
+                {progress.score}
+              </p>
+
+              <p className="mt-1 text-xs text-zinc-600">
+                Combined practice signal
+              </p>
+            </div>
+
+            <div className="card p-6">
+              <p className="text-xs text-zinc-600">
+                Questions practiced
+              </p>
+
+              <p className="mt-3 text-3xl font-semibold">
+                {
+                  progress.questions_practiced
+                }
+              </p>
+
+              <p className="mt-1 text-xs text-zinc-600">
+                Unique questions
+              </p>
+            </div>
+
+            <div className="card p-6">
+              <p className="text-xs text-zinc-600">
+                Answer average
+              </p>
+
+              <p
+                className={`mt-3 text-3xl font-semibold ${getScoreColor(
+                  progress.average_score,
+                )}`}
+              >
+                {
+                  progress.average_score
+                }
+              </p>
+
+              <p className="mt-1 text-xs text-zinc-600">
+                Out of 100
+              </p>
+            </div>
+
+            <div className="card p-6">
+              <p className="text-xs text-zinc-600">
+                Coverage
+              </p>
+
+              <p className="mt-3 text-3xl font-semibold">
+                {
+                  progress.completion_percentage
+                }
+                %
+              </p>
+
+              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                <div
+                  className="h-full rounded-full bg-violet-400"
+                  style={{
+                    width: `${progress.completion_percentage}%`,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {!data.mock_completed && (
+            <div className="mt-4 rounded-xl border border-amber-400/10 bg-amber-400/[0.03] p-4 text-xs leading-5 text-zinc-500">
+              <span className="font-semibold text-amber-300">
+                Important:
+              </span>{" "}
+              your readiness score currently does not
+              include demonstrated mock-interview
+              performance. Complete the mock to make
+              the assessment more representative.
+            </div>
+          )}
+
+          {/* TARGETED PRACTICE */}
+
+          {weakestArea && (
+            <div className="mt-5 flex flex-col gap-4 rounded-2xl border border-violet-400/15 bg-violet-400/[0.035] p-5 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-violet-300">
+                  Target your weakest area
+                </p>
+
+                <h3 className="mt-2 text-lg font-semibold">
+                  {weakestArea.name}
+                </h3>
+
+                <p className="mt-1 text-xs text-zinc-500">
+                  Current alignment:{" "}
+                  {weakestArea.score}/100
+                </p>
+              </div>
+
+              <Link
+                href={getPracticeHref(
+                  interviewId,
+                  weakestArea.name,
+                )}
+                className="primary-button rounded-xl px-5 py-3 text-center text-sm font-semibold"
+              >
+                Practice {weakestArea.name} Gap →
+              </Link>
+            </div>
+          )}
+        </section>
+
+        {/* READINESS SIGNALS */}
 
         <section className="mt-10">
           <div className="mb-5">
@@ -466,58 +722,52 @@ export default function ReadinessPage() {
           </div>
 
           <div className="grid gap-4 md:grid-cols-3">
-            {signals.map((signal) => (
-              <div
-                key={signal.label}
-                className="card p-6"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <p className="text-sm font-semibold">
-                      {signal.label}
-                    </p>
+            {signals.map(
+              (signal) => (
+                <div
+                  key={signal.label}
+                  className="card p-6"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm font-semibold">
+                        {signal.label}
+                      </p>
 
-                    <p className="mt-2 text-xs leading-5 text-zinc-600">
-                      {signal.description}
-                    </p>
+                      <p className="mt-2 text-xs leading-5 text-zinc-600">
+                        {
+                          signal.description
+                        }
+                      </p>
+                    </div>
+
+                    <span
+                      className={`text-2xl font-semibold ${getScoreColor(
+                        signal.value,
+                      )}`}
+                    >
+                      {signal.value}
+                    </span>
                   </div>
 
-                  <span
-                    className={`text-2xl font-semibold ${getScoreColor(
+                  <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                    <div
+                      className="h-full rounded-full bg-violet-400 transition-all duration-500"
+                      style={{
+                        width: `${signal.value}%`,
+                      }}
+                    />
+                  </div>
+
+                  <p className="mt-3 text-[10px] uppercase tracking-[0.12em] text-zinc-600">
+                    {getScoreLabel(
                       signal.value,
-                    )}`}
-                  >
-                    {signal.value}
-                  </span>
+                    )}
+                  </p>
                 </div>
-
-                <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
-                  <div
-                    className="h-full rounded-full bg-violet-400 transition-all duration-500"
-                    style={{
-                      width: `${signal.value}%`,
-                    }}
-                  />
-                </div>
-
-                <p className="mt-3 text-[10px] uppercase tracking-[0.12em] text-zinc-600">
-                  {getScoreLabel(signal.value)}
-                </p>
-              </div>
-            ))}
+              ),
+            )}
           </div>
-
-          {!data.mock_completed && (
-            <div className="mt-4 rounded-xl border border-amber-400/10 bg-amber-400/[0.03] p-4 text-xs leading-5 text-zinc-500">
-              <span className="font-semibold text-amber-300">
-                Note:
-              </span>{" "}
-              your current readiness does not yet include
-              demonstrated mock-interview performance.
-              Complete the mock to make the score more
-              representative.
-            </div>
-          )}
         </section>
 
         {/* TECHNICAL AREAS */}
@@ -534,39 +784,61 @@ export default function ReadinessPage() {
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {data.areas.map((area) => (
-              <div
-                key={area.name}
-                className="card p-5"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-sm font-medium">
-                    {area.name}
+            {data.areas.map(
+              (area) => (
+                <div
+                  key={area.name}
+                  className={`card p-5 transition ${
+                    weakestArea?.name ===
+                    area.name
+                      ? "border-violet-400/20 bg-violet-400/[0.025]"
+                      : ""
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-medium">
+                      {area.name}
+                    </p>
+
+                    <p
+                      className={`text-lg font-semibold ${getScoreColor(
+                        area.score,
+                      )}`}
+                    >
+                      {area.score}
+                    </p>
+                  </div>
+
+                  <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                    <div
+                      className="h-full rounded-full bg-violet-400"
+                      style={{
+                        width: `${area.score}%`,
+                      }}
+                    />
+                  </div>
+
+                  <p className="mt-4 text-xs leading-5 text-zinc-600">
+                    {
+                      area.explanation
+                    }
                   </p>
 
-                  <p
-                    className={`text-lg font-semibold ${getScoreColor(
-                      area.score,
-                    )}`}
-                  >
-                    {area.score}
-                  </p>
+                  {weakestArea?.name ===
+                    area.name && (
+                    <Link
+                      href={getPracticeHref(
+                        interviewId,
+                        area.name,
+                      )}
+                      className="mt-4 inline-flex text-xs font-semibold text-violet-300 transition hover:text-violet-200"
+                    >
+                      Practice this area →
+                    </Link>
+                  )}
                 </div>
-
-                <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
-                  <div
-                    className="h-full rounded-full bg-violet-400"
-                    style={{
-                      width: `${area.score}%`,
-                    }}
-                  />
-                </div>
-
-                <p className="mt-4 text-xs leading-5 text-zinc-600">
-                  {area.explanation}
-                </p>
-              </div>
-            ))}
+              ),
+            )}
           </div>
         </section>
 
@@ -578,23 +850,28 @@ export default function ReadinessPage() {
               Strong areas
             </p>
 
-            {data.strengths.length > 0 ? (
+            {data.strengths.length >
+            0 ? (
               <ul className="mt-5 space-y-3">
-                {data.strengths.map((item) => (
-                  <li
-                    key={item}
-                    className="rounded-xl border border-emerald-400/10 bg-emerald-400/[0.03] p-4 text-sm leading-6 text-zinc-400"
-                  >
-                    <span className="mr-2 text-emerald-300">
-                      ✓
-                    </span>
-                    {item}
-                  </li>
-                ))}
+                {data.strengths.map(
+                  (item) => (
+                    <li
+                      key={item}
+                      className="rounded-xl border border-emerald-400/10 bg-emerald-400/[0.03] p-4 text-sm leading-6 text-zinc-400"
+                    >
+                      <span className="mr-2 text-emerald-300">
+                        ✓
+                      </span>
+
+                      {item}
+                    </li>
+                  ),
+                )}
               </ul>
             ) : (
               <p className="mt-5 text-sm text-zinc-600">
-                No strengths have been recorded yet.
+                No strengths have been
+                recorded yet.
               </p>
             )}
           </div>
@@ -604,23 +881,28 @@ export default function ReadinessPage() {
               Priority gaps
             </p>
 
-            {data.priority_gaps.length > 0 ? (
+            {data.priority_gaps.length >
+            0 ? (
               <ul className="mt-5 space-y-3">
-                {data.priority_gaps.map((item) => (
-                  <li
-                    key={item}
-                    className="rounded-xl border border-amber-400/10 bg-amber-400/[0.03] p-4 text-sm leading-6 text-zinc-400"
-                  >
-                    <span className="mr-2 text-amber-300">
-                      !
-                    </span>
-                    {item}
-                  </li>
-                ))}
+                {data.priority_gaps.map(
+                  (item) => (
+                    <li
+                      key={item}
+                      className="rounded-xl border border-amber-400/10 bg-amber-400/[0.03] p-4 text-sm leading-6 text-zinc-400"
+                    >
+                      <span className="mr-2 text-amber-300">
+                        !
+                      </span>
+
+                      {item}
+                    </li>
+                  ),
+                )}
               </ul>
             ) : (
               <p className="mt-5 text-sm text-zinc-600">
-                No priority gaps have been identified.
+                No priority gaps have
+                been identified.
               </p>
             )}
           </div>
@@ -632,30 +914,43 @@ export default function ReadinessPage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-300">
-                Action plan
+                AI preparation plan
               </p>
 
               <h2 className="mt-2 text-2xl font-semibold">
-                Your next preparation moves
+                What InterviewPilot wants you to do next
               </h2>
+
+              <p className="mt-2 max-w-2xl text-xs leading-5 text-zinc-600">
+                These actions are generated from
+                your current Interview DNA, practice
+                activity, mock performance, and
+                technical gaps.
+              </p>
             </div>
 
             <span className="text-[10px] uppercase tracking-[0.14em] text-zinc-600">
-              Personalized from your Interview DNA
+              Live recommendation engine
             </span>
           </div>
 
-          {data.recommended_actions.length > 0 ? (
+          {data.recommended_actions.length >
+          0 ? (
             <div className="mt-6 grid gap-3 md:grid-cols-2">
               {data.recommended_actions.map(
-                (item, index) => (
+                (
+                  item,
+                  index,
+                ) => (
                   <div
                     key={`${item}-${index}`}
-                    className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5"
+                    className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-5 transition hover:border-violet-400/15 hover:bg-violet-400/[0.02]"
                   >
                     <div className="flex gap-4">
                       <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-violet-400/15 bg-violet-400/[0.05] text-xs font-semibold text-violet-300">
-                        {String(index + 1).padStart(
+                        {String(
+                          index + 1,
+                        ).padStart(
                           2,
                           "0",
                         )}
@@ -671,20 +966,31 @@ export default function ReadinessPage() {
             </div>
           ) : (
             <p className="mt-5 text-sm text-zinc-600">
-              Complete more preparation activity to
-              generate personalized actions.
+              Complete more preparation
+              activity to generate
+              personalized actions.
             </p>
           )}
         </section>
 
-        {/* FOOTER ACTIONS */}
+        {/* FOOTER */}
 
-        <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+        <div className="mt-8 flex flex-col gap-3 border-t border-white/[0.05] pt-6 sm:flex-row">
           <Link
             href={`/interviews/${interviewId}/prepare`}
             className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-6 py-3 text-center text-sm font-medium text-zinc-300 hover:bg-white/[0.06]"
           >
             ← Review Preparation
+          </Link>
+
+          <Link
+            href={getPracticeHref(
+              interviewId,
+              weakestArea?.name,
+            )}
+            className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-6 py-3 text-center text-sm font-medium text-zinc-300 hover:bg-white/[0.06]"
+          >
+            Practice Answers
           </Link>
 
           <Link
