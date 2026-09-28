@@ -2,6 +2,9 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 
+import CurionHeader from "@/components/curion-header";
+import CurionFooter from "@/components/curion-footer";
+
 type PageProps = {
   params: Promise<{
     id: string;
@@ -49,23 +52,29 @@ export default async function InterviewDetailsPage({
   const supabase = await createClient();
 
   const {
-    data: { claims },
+    data: claimsData,
+    error: claimsError,
   } = await supabase.auth.getClaims();
 
-  if (!claims?.sub) {
+  const userId = claimsData?.claims?.sub;
+
+  if (claimsError || !userId) {
     redirect(`/auth/login?next=/interviews/${id}`);
   }
 
-  const { data: interview, error } = await supabase
+  const {
+    data: interview,
+    error: interviewError,
+  } = await supabase
     .from("interviews")
     .select(
       "id, job_title, company_name, job_description, status, created_at, resume_id",
     )
     .eq("id", id)
-    .eq("user_id", claims.sub)
+    .eq("user_id", userId)
     .maybeSingle();
 
-  if (error || !interview) {
+  if (interviewError || !interview) {
     notFound();
   }
 
@@ -73,7 +82,7 @@ export default async function InterviewDetailsPage({
     .from("resumes")
     .select("file_name, file_type, file_size")
     .eq("id", interview.resume_id)
-    .eq("user_id", claims.sub)
+    .eq("user_id", userId)
     .maybeSingle();
 
   const { data: dna } = await supabase
@@ -100,26 +109,7 @@ export default async function InterviewDetailsPage({
 
   return (
     <main className="app-shell min-h-screen">
-      <header className="glass sticky top-0 z-20 border-x-0 border-t-0">
-        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
-          <Link href="/dashboard" className="flex items-center gap-3">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04]">
-              <span className="text-xs font-bold text-violet-300">IP</span>
-            </div>
-
-            <span className="font-semibold tracking-tight">
-              Interview<span className="text-violet-400">Pilot</span>
-            </span>
-          </Link>
-
-          <Link
-            href="/dashboard"
-            className="text-xs text-zinc-500 transition hover:text-white"
-          >
-            ← Dashboard
-          </Link>
-        </div>
-      </header>
+      <CurionHeader />
 
       <div className="mx-auto max-w-6xl px-6 py-10 lg:py-14">
         <div className="flex flex-col justify-between gap-6 sm:flex-row sm:items-end">
@@ -160,8 +150,8 @@ export default async function InterviewDetailsPage({
               </h2>
 
               <p className="mt-3 text-sm leading-6 text-zinc-500">
-                The interview has been saved. Run the InterviewPilot analysis
-                to compare the actual job description with your resume and
+                The interview has been saved. Run the Curion analysis to
+                compare the actual job description with your resume and
                 generate your personalized interview profile.
               </p>
 
@@ -192,7 +182,6 @@ export default async function InterviewDetailsPage({
           </section>
         ) : (
           <>
-            {/* Overall score + capability map */}
             <section className="mt-8 grid gap-6 lg:grid-cols-[0.7fr_1.3fr]">
               <div className="card flex flex-col items-center justify-center p-8 text-center sm:p-10">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-600">
@@ -271,7 +260,6 @@ export default async function InterviewDetailsPage({
               </div>
             </section>
 
-            {/* Interview focus + risk areas */}
             <section className="mt-6 grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
               <div className="card p-6 sm:p-8">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-400">
@@ -357,7 +345,6 @@ export default async function InterviewDetailsPage({
               </div>
             </section>
 
-            {/* Strong areas */}
             <section className="mt-6 card p-6 sm:p-8">
               <div className="flex flex-col justify-between gap-5 sm:flex-row sm:items-center">
                 <div>
@@ -396,7 +383,6 @@ export default async function InterviewDetailsPage({
               </div>
             </section>
 
-            {/* Interview details */}
             <section className="mt-6 grid gap-6 lg:grid-cols-2">
               <div className="card p-6">
                 <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-600">
@@ -431,6 +417,8 @@ export default async function InterviewDetailsPage({
           </>
         )}
       </div>
+
+      <CurionFooter />
     </main>
   );
 }
