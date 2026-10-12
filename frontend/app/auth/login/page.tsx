@@ -115,6 +115,9 @@ function LoginForm() {
           <Image
             src="/branding/curion-ai-dark.png"
             alt="Curion AI"
+            width={165}
+            height={44}
+            priority
             className="h-11 w-auto object-contain"
           />
         </Link>

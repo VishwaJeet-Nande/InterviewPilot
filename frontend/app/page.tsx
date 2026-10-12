@@ -241,14 +241,14 @@ export default function HomePage() {
 
           <div className="flex items-center gap-3">
             <Link
-              href="/login"
+              href="/auth/login"
               className="hidden rounded-xl px-4 py-2.5 text-sm font-medium text-zinc-300 transition hover:bg-white/[0.05] hover:text-white sm:block"
             >
               Sign in
             </Link>
 
             <Link
-              href="/signup"
+              href="/auth/signup"
               className="rounded-xl border border-violet-400/20 bg-violet-500/[0.08] px-4 py-2.5 text-sm font-semibold text-violet-200 transition hover:border-violet-300/30 hover:bg-violet-500/[0.14]"
             >
               Get started
@@ -286,7 +286,7 @@ export default function HomePage() {
 
               <div className="mt-9 flex flex-col gap-3 sm:flex-row">
                 <Link
-                  href="/signup"
+                  href="/auth/signup"
                   className="group inline-flex items-center justify-center gap-2 rounded-xl bg-white px-6 py-3.5 text-sm font-semibold text-black transition hover:bg-zinc-200"
                 >
                   Build my preparation system
@@ -790,7 +790,7 @@ export default function HomePage() {
 
           <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
             <Link
-              href="/signup"
+              href="/auth/signup"
               className="group inline-flex items-center justify-center gap-2 rounded-xl bg-white px-7 py-3.5 text-sm font-semibold text-black transition hover:bg-zinc-200"
             >
               Build my preparation system
@@ -800,7 +800,7 @@ export default function HomePage() {
             </Link>
 
             <Link
-              href="/login"
+              href="/auth/login"
               className="inline-flex items-center justify-center rounded-xl border border-white/[0.09] bg-white/[0.025] px-7 py-3.5 text-sm font-medium text-zinc-300 transition hover:border-white/[0.15] hover:bg-white/[0.05] hover:text-white"
             >
               I already have an account
@@ -844,7 +844,7 @@ export default function HomePage() {
 
                 <div className="mt-4 space-y-3">
                   <Link
-                    href="/signup"
+                    href="/auth/signup"
                     className="block text-xs text-zinc-600 transition hover:text-zinc-300"
                   >
                     Get started
@@ -892,13 +892,13 @@ export default function HomePage() {
 
                 <div className="mt-4 space-y-3">
                   <Link
-                    href="/login"
+                    href="/auth/login"
                     className="block text-xs text-zinc-600 transition hover:text-zinc-300"
                   >
                     Sign in
                   </Link>
                   <Link
-                    href="/signup"
+                    href="/auth/signup"
                     className="block text-xs text-zinc-600 transition hover:text-zinc-300"
                   >
                     Create account
