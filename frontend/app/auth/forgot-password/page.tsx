@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -59,10 +60,13 @@ export default function ForgotPasswordPage() {
           href="/"
           className="mb-8 flex items-center justify-center"
         >
-          <img
-            src="/branding/curion-ai-dark.png"
-            alt="Curion AI"
-            className="h-11 w-auto object-contain"
+          <Image
+             src="/branding/curion-ai-dark.png"
+             alt="Curion AI"
+             width={165}
+             height={44}
+             priority
+             className="h-11 w-auto object-contain"
           />
         </Link>
 
@@ -77,7 +81,7 @@ export default function ForgotPasswordPage() {
             </h1>
 
             <p className="mt-2 text-sm leading-6 text-zinc-500">
-              Enter your email and we'll send you a secure
+              Enter your email and we&apos;ll send you a secure
               password recovery link.
             </p>
           </div>
@@ -117,7 +121,7 @@ export default function ForgotPasswordPage() {
             {sent && (
               <div className="rounded-xl border border-emerald-400/15 bg-emerald-400/[0.05] px-4 py-3 text-xs leading-5 text-emerald-300">
                 Check your email for the password recovery
-                link. If you don't see it, check your spam
+                link. If you don&apos;t see it, check your spam
                 folder.
               </div>
             )}

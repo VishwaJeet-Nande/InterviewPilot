@@ -17,8 +17,8 @@ class PreparationModule(BaseModel):
     current_gap: str
     learning_objectives: list[str]
     practice_questions: list[str]
-    youtube_query: str
-    resources: list[YouTubeResource] = []
+    youtube_query: str = ""
+    resources: list[YouTubeResource] = Field(default_factory=list)
 
 
 class PreparationPlan(BaseModel):

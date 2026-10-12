@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 
 const features = [
@@ -206,10 +207,13 @@ export default function HomePage() {
         <div className="mx-auto flex h-[76px] max-w-7xl items-center justify-between px-5 sm:px-8 lg:px-10">
           <Link href="/" className="group flex items-center">
             <div className="relative h-10 w-[170px]">
-              <img
-                src="/branding/curion-ai-dark.png"
-                alt="Curion AI"
-                className="h-full w-full object-contain object-left"
+              <Image
+                 src="/branding/curion-ai-dark.png"
+                 alt="Curion AI"
+                 width={170}
+                 height={40}
+                 priority
+                 className="h-full w-full object-contain object-left"
               />
             </div>
           </Link>
@@ -759,10 +763,12 @@ export default function HomePage() {
 
         <div className="relative mx-auto max-w-4xl text-center">
           <div className="mx-auto h-16 w-16 overflow-hidden rounded-2xl border border-white/[0.08] bg-white/[0.025] shadow-2xl shadow-violet-950/20">
-            <img
-              src="/branding/curion-mark-dark.png"
-              alt="Curion AI"
-              className="h-full w-full object-cover"
+            <Image
+               src="/branding/curion-mark-dark.png"
+               alt="Curion AI"
+               width={64}
+               height={64}
+               className="h-full w-full object-cover"
             />
           </div>
 
@@ -810,10 +816,12 @@ export default function HomePage() {
             <div>
               <Link href="/" className="inline-flex items-center">
                 <div className="relative h-9 w-[150px]">
-                  <img
-                    src="/branding/curion-ai-dark.png"
-                    alt="Curion AI"
-                    className="h-full w-full object-contain object-left"
+                  <Image
+                     src="/branding/curion-ai-dark.png"
+                     alt="Curion AI"
+                     width={150}
+                     height={36}
+                     className="h-full w-full object-contain object-left"
                   />
                 </div>
               </Link>

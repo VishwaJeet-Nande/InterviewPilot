@@ -32,6 +32,28 @@ type Evaluation = {
   better_answer: string;
 };
 
+type CompletedAnswer = {
+  questionId: string;
+  question: string;
+  category: string;
+  difficulty: string;
+  answer: string;
+  score: number;
+  evaluation: Evaluation;
+};
+
+type MockSessionState = {
+  version: 1;
+  interviewId: string;
+  plan: MockPlan;
+  currentIndex: number;
+  answer: string;
+  evaluation: Evaluation | null;
+  scores: number[];
+  completedAnswers: CompletedAnswer[];
+  finished: boolean;
+};
+
 type SaveResponse = {
   status: string;
   interview_id: string;
@@ -40,9 +62,77 @@ type SaveResponse = {
   completed: boolean;
 };
 
+/*
+ * ---------------------------------------------------------
+ * BROWSER SPEECH RECOGNITION TYPES
+ * ---------------------------------------------------------
+ *
+ * Used for live speech -> text while recording.
+ *
+ * MediaRecorder still records the actual audio.
+ * SpeechRecognition is only responsible for the live
+ * transcript shown inside the answer box.
+ */
+
+type SpeechRecognitionAlternativeLike = {
+  transcript: string;
+  confidence: number;
+};
+
+type SpeechRecognitionResultLike = {
+  isFinal: boolean;
+  length: number;
+  [index: number]: SpeechRecognitionAlternativeLike;
+};
+
+type SpeechRecognitionResultListLike = {
+  length: number;
+  [index: number]: SpeechRecognitionResultLike;
+};
+
+type SpeechRecognitionEventLike = Event & {
+  resultIndex: number;
+  results: SpeechRecognitionResultListLike;
+};
+
+type SpeechRecognitionErrorEventLike = Event & {
+  error: string;
+  message?: string;
+};
+
+type SpeechRecognitionInstance = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  maxAlternatives: number;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+  onresult:
+    | ((event: SpeechRecognitionEventLike) => void)
+    | null;
+  onerror:
+    | ((event: SpeechRecognitionErrorEventLike) => void)
+    | null;
+  onend: (() => void) | null;
+};
+
+type SpeechRecognitionConstructor =
+  new () => SpeechRecognitionInstance;
+
+declare global {
+  interface Window {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  }
+}
+
 export default function MockInterviewPage() {
   const params = useParams();
   const interviewId = params.id as string;
+
+  const storageKey =
+    `curion-mock-session:${interviewId}`;
 
   const [plan, setPlan] =
     useState<MockPlan | null>(null);
@@ -58,6 +148,9 @@ export default function MockInterviewPage() {
 
   const [scores, setScores] =
     useState<number[]>([]);
+
+  const [completedAnswers, setCompletedAnswers] =
+    useState<CompletedAnswer[]>([]);
 
   const [loading, setLoading] =
     useState(false);
@@ -77,8 +170,17 @@ export default function MockInterviewPage() {
   const [finished, setFinished] =
     useState(false);
 
+  const [hydrated, setHydrated] =
+    useState(false);
+
+  const [restoredSession, setRestoredSession] =
+    useState(false);
+
   const [error, setError] =
     useState("");
+
+  const [liveTranscribing, setLiveTranscribing] =
+    useState(false);
 
   const recorderRef =
     useRef<MediaRecorder | null>(null);
@@ -94,6 +196,170 @@ export default function MockInterviewPage() {
       null,
     );
 
+  /*
+   * ---------------------------------------------------------
+   * LIVE SPEECH RECOGNITION REFS
+   * ---------------------------------------------------------
+   */
+
+  const speechRecognitionRef =
+    useRef<SpeechRecognitionInstance | null>(
+      null,
+    );
+
+  const speechFinalTranscriptRef =
+    useRef("");
+
+  const speechRecognitionSupportedRef =
+    useRef(false);
+
+  /*
+   * ---------------------------------------------------------
+   * SESSION RESTORE
+   * ---------------------------------------------------------
+   */
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const restoreSession = () => {
+      if (cancelled) {
+        return;
+      }
+
+      try {
+        const stored =
+          sessionStorage.getItem(storageKey);
+
+        if (!stored) {
+          setHydrated(true);
+          return;
+        }
+
+        const parsed =
+          JSON.parse(stored) as MockSessionState;
+
+        if (
+          parsed.version !== 1 ||
+          parsed.interviewId !== interviewId ||
+          !parsed.plan?.questions?.length
+        ) {
+          sessionStorage.removeItem(storageKey);
+          setHydrated(true);
+          return;
+        }
+
+        setPlan(parsed.plan);
+
+        setCurrentIndex(
+          Math.max(
+            0,
+            Math.min(
+              parsed.currentIndex,
+              parsed.plan.questions.length - 1,
+            ),
+          ),
+        );
+
+        setAnswer(parsed.answer || "");
+
+        setEvaluation(
+          parsed.evaluation || null,
+        );
+
+        setScores(
+          Array.isArray(parsed.scores)
+            ? parsed.scores
+            : [],
+        );
+
+        setCompletedAnswers(
+          Array.isArray(
+            parsed.completedAnswers,
+          )
+            ? parsed.completedAnswers
+            : [],
+        );
+
+        setFinished(
+          Boolean(parsed.finished),
+        );
+
+        setRestoredSession(true);
+      } catch {
+        sessionStorage.removeItem(storageKey);
+      } finally {
+        setHydrated(true);
+      }
+    };
+
+    /*
+     * Defer restoration until after the current effect
+     * cycle so React does not flag synchronous state
+     * updates inside the effect.
+     */
+    const timeoutId =
+      window.setTimeout(
+        restoreSession,
+        0,
+      );
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [interviewId, storageKey]);
+
+  /*
+   * ---------------------------------------------------------
+   * AUTO SAVE SESSION
+   * ---------------------------------------------------------
+   */
+
+  useEffect(() => {
+    if (!hydrated || !plan) {
+      return;
+    }
+
+    const session: MockSessionState = {
+      version: 1,
+      interviewId,
+      plan,
+      currentIndex,
+      answer,
+      evaluation,
+      scores,
+      completedAnswers,
+      finished,
+    };
+
+    try {
+      sessionStorage.setItem(
+        storageKey,
+        JSON.stringify(session),
+      );
+    } catch {
+      // Storage failures should never break the interview.
+    }
+  }, [
+    hydrated,
+    interviewId,
+    storageKey,
+    plan,
+    currentIndex,
+    answer,
+    evaluation,
+    scores,
+    completedAnswers,
+    finished,
+  ]);
+
+  /*
+   * ---------------------------------------------------------
+   * CLEANUP
+   * ---------------------------------------------------------
+   */
+
   useEffect(() => {
     return () => {
       if (timerRef.current) {
@@ -103,8 +369,17 @@ export default function MockInterviewPage() {
       streamRef.current?.getTracks().forEach(
         (track) => track.stop(),
       );
+
+      speechRecognitionRef.current?.abort();
+      speechRecognitionRef.current = null;
     };
   }, []);
+
+  /*
+   * ---------------------------------------------------------
+   * START NEW MOCK
+   * ---------------------------------------------------------
+   */
 
   async function startInterview() {
     setLoading(true);
@@ -133,10 +408,29 @@ export default function MockInterviewPage() {
       setPlan(data);
       setCurrentIndex(0);
       setScores([]);
+      setCompletedAnswers([]);
       setEvaluation(null);
       setAnswer("");
       setRecordedAudio(null);
       setFinished(false);
+      setRestoredSession(false);
+
+      const initialSession: MockSessionState = {
+        version: 1,
+        interviewId,
+        plan: data,
+        currentIndex: 0,
+        answer: "",
+        evaluation: null,
+        scores: [],
+        completedAnswers: [],
+        finished: false,
+      };
+
+      sessionStorage.setItem(
+        storageKey,
+        JSON.stringify(initialSession),
+      );
     } catch (err) {
       setError(
         err instanceof Error
@@ -147,6 +441,198 @@ export default function MockInterviewPage() {
       setLoading(false);
     }
   }
+
+  /*
+   * ---------------------------------------------------------
+   * RESET MOCK SESSION
+   * ---------------------------------------------------------
+   */
+
+  function resetMockSession() {
+    const confirmed =
+      window.confirm(
+        "Reset this mock interview? Your current browser-session progress will be deleted.",
+      );
+
+    if (!confirmed) {
+      return;
+    }
+
+    stopLiveSpeechRecognition();
+
+    sessionStorage.removeItem(
+      storageKey,
+    );
+
+    setPlan(null);
+    setCurrentIndex(0);
+    setAnswer("");
+    setEvaluation(null);
+    setScores([]);
+    setCompletedAnswers([]);
+    setRecordedAudio(null);
+    setFinished(false);
+    setRestoredSession(false);
+    setError("");
+    setLiveTranscribing(false);
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * LIVE SPEECH RECOGNITION
+   * ---------------------------------------------------------
+   *
+   * This is the Google-Translate-style layer.
+   *
+   * While MediaRecorder records audio, SpeechRecognition
+   * continuously converts speech into text and updates
+   * the answer textarea.
+   */
+
+  function getSpeechRecognitionConstructor() {
+    if (typeof window === "undefined") {
+      return null;
+    }
+
+    return (
+      window.SpeechRecognition ||
+      window.webkitSpeechRecognition ||
+      null
+    );
+  }
+
+  function startLiveSpeechRecognition() {
+    const SpeechRecognition =
+      getSpeechRecognitionConstructor();
+
+    if (!SpeechRecognition) {
+      speechRecognitionSupportedRef.current =
+        false;
+
+      setLiveTranscribing(false);
+
+      return;
+    }
+
+    speechRecognitionSupportedRef.current =
+      true;
+
+    const recognition =
+      new SpeechRecognition();
+
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-IN";
+    recognition.maxAlternatives = 1;
+
+    speechFinalTranscriptRef.current =
+      "";
+
+    recognition.onresult = (event) => {
+      let interimTranscript = "";
+
+      for (
+        let index = event.resultIndex;
+        index < event.results.length;
+        index += 1
+      ) {
+        const result =
+          event.results[index];
+
+        const transcript =
+          result[0]?.transcript || "";
+
+        if (result.isFinal) {
+          speechFinalTranscriptRef.current +=
+            `${transcript.trim()} `;
+        } else {
+          interimTranscript += transcript;
+        }
+      }
+
+      const finalTranscript =
+        speechFinalTranscriptRef.current.trim();
+
+      const combinedTranscript =
+        `${finalTranscript} ${interimTranscript.trim()}`.trim();
+
+      setAnswer(combinedTranscript);
+    };
+
+    recognition.onerror = (event) => {
+      /*
+       * "no-speech" is normal when the user pauses.
+       * Do not interrupt the recording for it.
+       */
+      if (
+        event.error === "no-speech" ||
+        event.error === "aborted"
+      ) {
+        return;
+      }
+
+      setLiveTranscribing(false);
+    };
+
+    recognition.onend = () => {
+      /*
+       * Some browsers automatically end recognition
+       * after a period of silence even when continuous
+       * mode is enabled.
+       *
+       * Restart while the actual audio recorder is
+       * still running.
+       */
+      if (
+        recorderRef.current &&
+        recording
+      ) {
+        try {
+          recognition.start();
+          setLiveTranscribing(true);
+        } catch {
+          // Browser may reject a rapid restart.
+        }
+      } else {
+        setLiveTranscribing(false);
+      }
+    };
+
+    speechRecognitionRef.current =
+      recognition;
+
+    try {
+      recognition.start();
+      setLiveTranscribing(true);
+    } catch {
+      setLiveTranscribing(false);
+    }
+  }
+
+  function stopLiveSpeechRecognition() {
+    const recognition =
+      speechRecognitionRef.current;
+
+    if (!recognition) {
+      setLiveTranscribing(false);
+      return;
+    }
+
+    try {
+      recognition.stop();
+    } catch {
+      // Recognition may already be stopped.
+    }
+
+    speechRecognitionRef.current = null;
+    setLiveTranscribing(false);
+  }
+
+  /*
+   * ---------------------------------------------------------
+   * SUBMIT ANSWER
+   * ---------------------------------------------------------
+   */
 
   async function submitAnswer(
     textAnswer?: string,
@@ -161,6 +647,13 @@ export default function MockInterviewPage() {
 
     setEvaluating(true);
     setError("");
+
+    /*
+     * Make sure live recognition is completely stopped
+     * before sending the recorded answer.
+     */
+    stopLiveSpeechRecognition();
+
     setEvaluation(null);
 
     try {
@@ -192,7 +685,10 @@ export default function MockInterviewPage() {
         },
       );
 
-      const data = await response.json();
+      const data =
+        (await response.json()) as Evaluation & {
+          detail?: string;
+        };
 
       if (!response.ok) {
         throw new Error(
@@ -201,6 +697,9 @@ export default function MockInterviewPage() {
         );
       }
 
+      /*
+       * Save to backend.
+       */
       const saveResponse = await fetch(
         `${API_BASE_URL}/api/v1/interviews/${interviewId}/mock/save`,
         {
@@ -226,18 +725,79 @@ export default function MockInterviewPage() {
 
       if (!saveResponse.ok) {
         throw new Error(
-          "detail" in saveData && saveData.detail
+          "detail" in saveData &&
+          saveData.detail
             ? saveData.detail
             : "Answer evaluation succeeded, but the result could not be saved.",
         );
       }
 
+      const normalizedAnswer =
+        data.transcript ||
+        textAnswer ||
+        "";
+
+      const completedAnswer: CompletedAnswer = {
+        questionId: question.id,
+        question: question.question,
+        category: question.category,
+        difficulty: question.difficulty,
+        answer: normalizedAnswer,
+        score: data.overall_score,
+        evaluation: data,
+      };
+
+      setCompletedAnswers(
+        (previous) => {
+          const withoutCurrent =
+            previous.filter(
+              (item) =>
+                item.questionId !==
+                question.id,
+            );
+
+          return [
+            ...withoutCurrent,
+            completedAnswer,
+          ];
+        },
+      );
+
       setEvaluation(data);
 
-      setScores((previous) => [
-        ...previous,
-        data.overall_score,
-      ]);
+      /*
+       * Keep score array aligned with the question.
+       */
+      setScores(
+        (previous) => {
+          const existingIndex =
+            completedAnswers.findIndex(
+              (item) =>
+                item.questionId ===
+                question.id,
+            );
+
+          if (
+            existingIndex >= 0 &&
+            existingIndex < previous.length
+          ) {
+            const updated = [
+              ...previous,
+            ];
+
+            updated[
+              existingIndex
+            ] = data.overall_score;
+
+            return updated;
+          }
+
+          return [
+            ...previous,
+            data.overall_score,
+          ];
+        },
+      );
 
       setRecordedAudio(null);
 
@@ -254,6 +814,12 @@ export default function MockInterviewPage() {
       setEvaluating(false);
     }
   }
+
+  /*
+   * ---------------------------------------------------------
+   * NEXT QUESTION
+   * ---------------------------------------------------------
+   */
 
   function nextQuestion() {
     if (!plan) return;
@@ -274,12 +840,20 @@ export default function MockInterviewPage() {
     setEvaluation(null);
     setRecordedAudio(null);
     setError("");
+    setLiveTranscribing(false);
   }
+
+  /*
+   * ---------------------------------------------------------
+   * VOICE RECORDING
+   * ---------------------------------------------------------
+   */
 
   async function startRecording() {
     setError("");
     setRecordedAudio(null);
     setAnswer("");
+    setEvaluation(null);
 
     if (
       !navigator.mediaDevices?.getUserMedia
@@ -291,7 +865,8 @@ export default function MockInterviewPage() {
     }
 
     if (
-      typeof MediaRecorder === "undefined"
+      typeof MediaRecorder ===
+      "undefined"
     ) {
       setError(
         "Voice recording is not supported by this browser.",
@@ -310,7 +885,9 @@ export default function MockInterviewPage() {
 
       chunksRef.current = [];
 
-      recorder.ondataavailable = (event) => {
+      recorder.ondataavailable = (
+        event,
+      ) => {
         if (event.data.size > 0) {
           chunksRef.current.push(
             event.data,
@@ -333,7 +910,9 @@ export default function MockInterviewPage() {
         );
 
         streamRef.current = null;
+
         setRecordedAudio(blob);
+
         chunksRef.current = [];
       };
 
@@ -351,6 +930,12 @@ export default function MockInterviewPage() {
             (seconds) => seconds + 1,
           );
         }, 1000);
+
+      /*
+       * Start live speech -> text alongside
+       * MediaRecorder.
+       */
+      startLiveSpeechRecognition();
     } catch {
       setError(
         "Microphone access was denied or unavailable.",
@@ -359,6 +944,12 @@ export default function MockInterviewPage() {
   }
 
   function stopRecording() {
+    /*
+     * Stop speech recognition first so the final
+     * transcript is not modified after recording ends.
+     */
+    stopLiveSpeechRecognition();
+
     if (!recorderRef.current) return;
 
     recorderRef.current.stop();
@@ -373,10 +964,20 @@ export default function MockInterviewPage() {
   }
 
   function cancelRecording() {
+    stopLiveSpeechRecognition();
+
     if (recorderRef.current) {
-      recorderRef.current.ondataavailable = null;
+      recorderRef.current.ondataavailable =
+        null;
+
       recorderRef.current.onstop = null;
-      recorderRef.current.stop();
+
+      try {
+        recorderRef.current.stop();
+      } catch {
+        // Recorder may already be stopped.
+      }
+
       recorderRef.current = null;
     }
 
@@ -387,14 +988,19 @@ export default function MockInterviewPage() {
     streamRef.current = null;
 
     chunksRef.current = [];
+
     setRecordedAudio(null);
     setRecording(false);
     setRecordingSeconds(0);
+    setLiveTranscribing(false);
     setError("");
   }
 
   async function sendRecordedAudio() {
-    if (!recordedAudio || evaluating) {
+    if (
+      !recordedAudio ||
+      evaluating
+    ) {
       return;
     }
 
@@ -404,6 +1010,12 @@ export default function MockInterviewPage() {
     );
   }
 
+  /*
+   * ---------------------------------------------------------
+   * DERIVED STATE
+   * ---------------------------------------------------------
+   */
+
   const currentQuestion =
     plan?.questions[currentIndex];
 
@@ -411,11 +1023,18 @@ export default function MockInterviewPage() {
     scores.length > 0
       ? Math.round(
           scores.reduce(
-            (sum, score) => sum + score,
+            (sum, score) =>
+              sum + score,
             0,
           ) / scores.length,
         )
       : 0;
+
+  /*
+   * ---------------------------------------------------------
+   * RENDER
+   * ---------------------------------------------------------
+   */
 
   return (
     <main className="app-shell min-h-screen">
@@ -426,9 +1045,9 @@ export default function MockInterviewPage() {
               href={`/interviews/${interviewId}/prepare`}
               className="font-semibold"
             >
-              Interview
+              Curion
               <span className="text-violet-400">
-                Pilot
+                AI
               </span>
             </Link>
 
@@ -473,58 +1092,63 @@ export default function MockInterviewPage() {
       </header>
 
       <div className="mx-auto max-w-4xl px-6 py-12 lg:py-16">
-        {!plan && !loading && (
-          <div className="text-center">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-violet-400">
-              AI Mock Interview
-            </p>
+        {!plan &&
+          !loading &&
+          hydrated && (
+            <div className="text-center">
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-violet-400">
+                AI Mock Interview
+              </p>
 
-            <h1 className="mt-4 text-4xl font-semibold">
-              Let's simulate the interview.
-            </h1>
+              <h1 className="mt-4 text-4xl font-semibold">
+                Let&apos;s simulate the interview.
+              </h1>
 
-            <p className="mx-auto mt-4 max-w-2xl text-sm leading-7 text-zinc-500">
-              InterviewPilot will ask role-specific questions
-              based on your Interview DNA and evaluate each
-              answer as you go.
-            </p>
+              <p className="mx-auto mt-4 max-w-2xl text-sm leading-7 text-zinc-500">
+                Curion AI will ask role-specific
+                questions based on your Interview
+                DNA and evaluate each answer as you
+                go.
+              </p>
 
-            {error && (
-              <div className="mx-auto mt-6 max-w-xl rounded-xl border border-rose-400/15 bg-rose-400/[0.05] p-4 text-left text-xs text-rose-300">
-                {error}
-              </div>
-            )}
-
-            <button
-              type="button"
-              onClick={startInterview}
-              className="primary-button mt-8 rounded-xl px-7 py-4 text-sm font-semibold"
-            >
-              Start AI Mock Interview →
-            </button>
-
-            <div className="mx-auto mt-10 grid max-w-2xl gap-3 sm:grid-cols-3">
-              {[
-                ["6", "Questions"],
-                ["Text", "Answer mode"],
-                ["Voice", "Answer mode"],
-              ].map(([value, label]) => (
-                <div
-                  key={`${value}-${label}`}
-                  className="card p-5"
-                >
-                  <p className="text-xl font-semibold">
-                    {value}
-                  </p>
-
-                  <p className="mt-2 text-xs text-zinc-600">
-                    {label}
-                  </p>
+              {error && (
+                <div className="mx-auto mt-6 max-w-xl rounded-xl border border-rose-400/15 bg-rose-400/[0.05] p-4 text-left text-xs text-rose-300">
+                  {error}
                 </div>
-              ))}
+              )}
+
+              <button
+                type="button"
+                onClick={startInterview}
+                className="primary-button mt-8 rounded-xl px-7 py-4 text-sm font-semibold"
+              >
+                Start AI Mock Interview →
+              </button>
+
+              <div className="mx-auto mt-10 grid max-w-2xl gap-3 sm:grid-cols-3">
+                {[
+                  ["6", "Questions"],
+                  ["Text", "Answer mode"],
+                  ["Voice", "Answer mode"],
+                ].map(
+                  ([value, label]) => (
+                    <div
+                      key={`${value}-${label}`}
+                      className="card p-5"
+                    >
+                      <p className="text-xl font-semibold">
+                        {value}
+                      </p>
+
+                      <p className="mt-2 text-xs text-zinc-600">
+                        {label}
+                      </p>
+                    </div>
+                  ),
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
         {loading && (
           <div className="py-20 text-center">
@@ -537,8 +1161,9 @@ export default function MockInterviewPage() {
             </h1>
 
             <p className="mt-3 text-sm text-zinc-500">
-              Building questions around your role,
-              experience, and highest-risk areas.
+              Building questions around your
+              role, experience, and highest-risk
+              areas.
             </p>
 
             <div className="mx-auto mt-8 h-2 max-w-md overflow-hidden rounded-full bg-white/[0.06]">
@@ -547,289 +1172,394 @@ export default function MockInterviewPage() {
           </div>
         )}
 
-        {plan && !finished && currentQuestion && (
-          <>
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs uppercase tracking-[0.2em] text-violet-400">
-                  Live interview
-                </p>
+        {plan &&
+          !finished &&
+          currentQuestion && (
+            <>
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-3">
+                    <p className="text-xs uppercase tracking-[0.2em] text-violet-400">
+                      Live interview
+                    </p>
 
-                <p className="mt-2 text-sm text-zinc-500">
-                  Question {currentIndex + 1} of{" "}
-                  {plan.questions.length}
-                </p>
+                    {restoredSession && (
+                      <span className="rounded-full border border-emerald-400/15 bg-emerald-400/[0.04] px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-emerald-300">
+                        Session saved
+                      </span>
+                    )}
+                  </div>
+
+                  <p className="mt-2 text-sm text-zinc-500">
+                    Question{" "}
+                    {currentIndex + 1}{" "}
+                    of{" "}
+                    {plan.questions.length}
+                  </p>
+                </div>
+
+                <div className="text-right">
+                  <p className="text-xs text-zinc-600">
+                    Current average
+                  </p>
+
+                  <p className="mt-1 text-lg font-semibold">
+                    {scores.length
+                      ? `${averageScore}/100`
+                      : "—"}
+                  </p>
+                </div>
               </div>
 
-              <div className="text-right">
-                <p className="text-xs text-zinc-600">
-                  Current average
-                </p>
-
-                <p className="mt-1 text-lg font-semibold">
-                  {scores.length
-                    ? `${averageScore}/100`
-                    : "—"}
-                </p>
-              </div>
-            </div>
-
-            <div className="mt-6 h-1 overflow-hidden rounded-full bg-white/[0.06]">
-              <div
-                className="h-full rounded-full bg-violet-400 transition-all"
-                style={{
-                  width: `${
-                    ((currentIndex + 1) /
-                      plan.questions.length) *
-                    100
-                  }%`,
-                }}
-              />
-            </div>
-
-            <div className="card mt-8 p-7 sm:p-10">
-              <div className="flex flex-wrap gap-2">
-                <span className="rounded-full border border-violet-400/20 bg-violet-400/[0.05] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-violet-300">
-                  {currentQuestion.category}
-                </span>
-
-                <span className="rounded-full border border-white/[0.07] bg-white/[0.02] px-3 py-1 text-[10px] uppercase tracking-[0.12em] text-zinc-500">
-                  {currentQuestion.difficulty}
-                </span>
+              <div className="mt-6 h-1 overflow-hidden rounded-full bg-white/[0.06]">
+                <div
+                  className="h-full rounded-full bg-violet-400 transition-all"
+                  style={{
+                    width: `${
+                      ((currentIndex +
+                        1) /
+                        plan.questions
+                          .length) *
+                      100
+                    }%`,
+                  }}
+                />
               </div>
 
-              <p className="mt-8 text-xs font-semibold uppercase tracking-[0.16em] text-zinc-600">
-                Interviewer
-              </p>
+              <div className="card mt-8 p-7 sm:p-10">
+                <div className="flex flex-wrap gap-2">
+                  <span className="rounded-full border border-violet-400/20 bg-violet-400/[0.05] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-violet-300">
+                    {
+                      currentQuestion.category
+                    }
+                  </span>
 
-              <h1 className="mt-3 text-2xl font-semibold leading-9 sm:text-3xl">
-                {currentQuestion.question}
-              </h1>
+                  <span className="rounded-full border border-white/[0.07] bg-white/[0.02] px-3 py-1 text-[10px] uppercase tracking-[0.12em] text-zinc-500">
+                    {
+                      currentQuestion.difficulty
+                    }
+                  </span>
+                </div>
 
-              <textarea
-                value={answer}
-                onChange={(event) =>
-                  setAnswer(event.target.value)
-                }
-                disabled={
-                  evaluating ||
-                  recording ||
-                  !!recordedAudio
-                }
-                rows={9}
-                placeholder="Answer as if you're speaking directly to the interviewer..."
-                className="input-field mt-8 resize-none px-4 py-4 text-sm leading-7 disabled:opacity-60"
-              />
+                <p className="mt-8 text-xs font-semibold uppercase tracking-[0.16em] text-zinc-600">
+                  Interviewer
+                </p>
 
-              <div className="mt-4 flex flex-wrap gap-3">
-                <button
-                  type="button"
+                <h1 className="mt-3 text-2xl font-semibold leading-9 sm:text-3xl">
+                  {
+                    currentQuestion.question
+                  }
+                </h1>
+
+                <textarea
+                  value={answer}
+                  onChange={(event) =>
+                    setAnswer(
+                      event.target.value,
+                    )
+                  }
                   disabled={
                     evaluating ||
                     recording ||
-                    !!recordedAudio ||
-                    !answer.trim()
+                    !!recordedAudio
                   }
-                  onClick={() =>
-                    submitAnswer(answer)
+                  rows={9}
+                  placeholder={
+                    recording
+                      ? "Speak naturally — your answer will appear here as you talk..."
+                      : "Answer as if you're speaking directly to the interviewer..."
                   }
-                  className="primary-button rounded-xl px-6 py-3 text-sm font-semibold disabled:opacity-40"
-                >
-                  {evaluating
-                    ? "Evaluating..."
-                    : "Submit answer"}
-                </button>
+                  className="input-field mt-8 resize-none px-4 py-4 text-sm leading-7 disabled:opacity-60"
+                />
 
-                {!recording &&
-                !recordedAudio ? (
-                  <button
-                    type="button"
-                    disabled={evaluating}
-                    onClick={startRecording}
-                    className="rounded-xl border border-violet-400/20 bg-violet-400/[0.05] px-6 py-3 text-sm font-semibold text-violet-300 hover:bg-violet-400/[0.1] disabled:opacity-40"
-                  >
-                    🎙 Answer with voice
-                  </button>
-                ) : recording ? (
-                  <button
-                    type="button"
-                    onClick={stopRecording}
-                    className="rounded-xl border border-rose-400/20 bg-rose-400/[0.05] px-6 py-3 text-sm font-semibold text-rose-300"
-                  >
-                    ● Stop recording{" "}
-                    {recordingSeconds}s
-                  </button>
-                ) : null}
-              </div>
-
-              {recording && (
-                <div className="mt-5 rounded-xl border border-violet-400/15 bg-violet-400/[0.04] p-4">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <p className="text-xs font-semibold text-violet-300">
-                        Recording in progress
-                      </p>
-
-                      <p className="mt-1 text-xs text-zinc-500">
-                        Stop when you're finished. You can
-                        review your recording before sending it.
-                      </p>
-                    </div>
-
-                    <span className="shrink-0 text-sm font-semibold text-violet-300">
-                      {recordingSeconds}s
+                {recording && (
+                  <div className="mt-3 flex items-center gap-2 text-xs">
+                    <span className="relative flex h-2.5 w-2.5">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-rose-400 opacity-75" />
+                      <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-rose-400" />
                     </span>
+
+                    {liveTranscribing ? (
+                      <span className="text-violet-300">
+                        Listening & typing your answer live...
+                      </span>
+                    ) : (
+                      <span className="text-zinc-500">
+                        Recording audio...
+                      </span>
+                    )}
                   </div>
-                </div>
-              )}
+                )}
 
-              {recordedAudio && !recording && (
-                <div className="mt-5 rounded-xl border border-violet-400/15 bg-violet-400/[0.04] p-5">
-                  <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-300">
-                    Voice answer ready
-                  </p>
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    disabled={
+                      evaluating ||
+                      recording ||
+                      !!recordedAudio ||
+                      !answer.trim()
+                    }
+                    onClick={() =>
+                      submitAnswer(
+                        answer,
+                      )
+                    }
+                    className="primary-button rounded-xl px-6 py-3 text-sm font-semibold disabled:opacity-40"
+                  >
+                    {evaluating
+                      ? "Evaluating..."
+                      : "Submit answer"}
+                  </button>
 
-                  <p className="mt-2 text-sm text-zinc-400">
-                    Your recording is ready. Send it for AI
-                    evaluation or cancel and record again.
-                  </p>
-
-                  <div className="mt-4 flex flex-wrap gap-3">
+                  {!recording &&
+                  !recordedAudio ? (
                     <button
                       type="button"
-                      disabled={evaluating}
-                      onClick={cancelRecording}
-                      className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-6 py-3 text-sm font-semibold text-zinc-300 hover:bg-white/[0.06] disabled:opacity-40"
+                      disabled={
+                        evaluating
+                      }
+                      onClick={
+                        startRecording
+                      }
+                      className="rounded-xl border border-violet-400/20 bg-violet-400/[0.05] px-6 py-3 text-sm font-semibold text-violet-300 hover:bg-violet-400/[0.1] disabled:opacity-40"
                     >
-                      ✕ Cancel
+                      🎙 Start voice answer
                     </button>
-
+                  ) : recording ? (
                     <button
                       type="button"
-                      disabled={evaluating}
-                      onClick={sendRecordedAudio}
-                      className="primary-button rounded-xl px-6 py-3 text-sm font-semibold disabled:opacity-40"
+                      onClick={
+                        stopRecording
+                      }
+                      className="rounded-xl border border-rose-400/20 bg-rose-400/[0.05] px-6 py-3 text-sm font-semibold text-rose-300"
                     >
-                      {evaluating
-                        ? "Evaluating..."
-                        : "Send recording →"}
+                      ● Stop recording{" "}
+                      {
+                        recordingSeconds
+                      }
+                      s
                     </button>
-                  </div>
+                  ) : null}
                 </div>
-              )}
 
-              {error && (
-                <div className="mt-5 rounded-xl border border-rose-400/15 bg-rose-400/[0.05] p-4 text-xs text-rose-300">
-                  {error}
-                </div>
-              )}
-
-              {evaluation && (
-                <div className="mt-10 border-t border-white/[0.06] pt-8">
-                  <div className="flex items-end justify-between">
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.16em] text-emerald-300">
-                        Answer evaluated
-                      </p>
-
-                      <p className="mt-2 text-4xl font-semibold">
-                        {evaluation.overall_score}
-                        <span className="ml-1 text-sm text-zinc-600">
-                          /100
-                        </span>
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                    {[
-                      [
-                        "Accuracy",
-                        evaluation.technical_accuracy,
-                      ],
-                      [
-                        "Complete",
-                        evaluation.completeness,
-                      ],
-                      [
-                        "Relevant",
-                        evaluation.relevance,
-                      ],
-                      [
-                        "Structure",
-                        evaluation.structure,
-                      ],
-                    ].map(([label, value]) => (
-                      <div
-                        key={label as string}
-                        className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 text-center"
-                      >
-                        <p className="text-[9px] uppercase text-zinc-600">
-                          {label as string}
+                {recording && (
+                  <div className="mt-5 rounded-xl border border-violet-400/15 bg-violet-400/[0.04] p-4">
+                    <div className="flex items-center justify-between gap-4">
+                      <div>
+                        <p className="text-xs font-semibold text-violet-300">
+                          Voice answer in progress
                         </p>
 
-                        <p className="mt-1 text-lg font-semibold">
-                          {value as number}
+                        <p className="mt-1 text-xs text-zinc-500">
+                          Speak naturally. Curion
+                          is recording your voice
+                          and typing your answer
+                          live above.
                         </p>
                       </div>
-                    ))}
-                  </div>
 
-                  <div className="mt-6 grid gap-3 sm:grid-cols-2">
-                    <div className="rounded-xl border border-emerald-400/10 bg-emerald-400/[0.03] p-4">
-                      <p className="text-xs font-semibold text-emerald-300">
-                        Strengths
-                      </p>
-
-                      <ul className="mt-3 space-y-2">
-                        {evaluation.strengths.map(
-                          (item) => (
-                            <li
-                              key={item}
-                              className="text-xs leading-5 text-zinc-400"
-                            >
-                              • {item}
-                            </li>
-                          ),
-                        )}
-                      </ul>
-                    </div>
-
-                    <div className="rounded-xl border border-amber-400/10 bg-amber-400/[0.03] p-4">
-                      <p className="text-xs font-semibold text-amber-300">
-                        Improve
-                      </p>
-
-                      <ul className="mt-3 space-y-2">
-                        {evaluation.improvements.map(
-                          (item) => (
-                            <li
-                              key={item}
-                              className="text-xs leading-5 text-zinc-400"
-                            >
-                              • {item}
-                            </li>
-                          ),
-                        )}
-                      </ul>
+                      <span className="shrink-0 text-sm font-semibold text-violet-300">
+                        {
+                          recordingSeconds
+                        }
+                        s
+                      </span>
                     </div>
                   </div>
+                )}
 
-                  <button
-                    type="button"
-                    onClick={nextQuestion}
-                    className="primary-button mt-8 w-full rounded-xl px-6 py-4 text-sm font-semibold"
-                  >
-                    {currentIndex ===
-                    plan.questions.length - 1
-                      ? "Finish Mock Interview →"
-                      : "Next Question →"}
-                  </button>
-                </div>
-              )}
-            </div>
-          </>
-        )}
+                {recordedAudio &&
+                  !recording && (
+                    <div className="mt-5 rounded-xl border border-violet-400/15 bg-violet-400/[0.04] p-5">
+                      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-violet-300">
+                        Voice answer ready
+                      </p>
+
+                      <p className="mt-2 text-sm text-zinc-400">
+                        Your recording is
+                        ready. The live transcript
+                        is shown above. Send the
+                        recording for AI evaluation
+                        or cancel and record again.
+                      </p>
+
+                      <div className="mt-4 flex flex-wrap gap-3">
+                        <button
+                          type="button"
+                          disabled={
+                            evaluating
+                          }
+                          onClick={
+                            cancelRecording
+                          }
+                          className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-6 py-3 text-sm font-semibold text-zinc-300 hover:bg-white/[0.06] disabled:opacity-40"
+                        >
+                          ✕ Cancel
+                        </button>
+
+                        <button
+                          type="button"
+                          disabled={
+                            evaluating
+                          }
+                          onClick={
+                            sendRecordedAudio
+                          }
+                          className="primary-button rounded-xl px-6 py-3 text-sm font-semibold disabled:opacity-40"
+                        >
+                          {evaluating
+                            ? "Evaluating..."
+                            : "Send recording →"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                {error && (
+                  <div className="mt-5 rounded-xl border border-rose-400/15 bg-rose-400/[0.05] p-4 text-xs text-rose-300">
+                    {error}
+                  </div>
+                )}
+
+                {evaluation && (
+                  <div className="mt-10 border-t border-white/[0.06] pt-8">
+                    <div className="flex items-end justify-between">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.16em] text-emerald-300">
+                          Answer evaluated
+                        </p>
+
+                        <p className="mt-2 text-4xl font-semibold">
+                          {
+                            evaluation.overall_score
+                          }
+                          <span className="ml-1 text-sm text-zinc-600">
+                            /100
+                          </span>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      {[
+                        [
+                          "Accuracy",
+                          evaluation.technical_accuracy,
+                        ],
+                        [
+                          "Complete",
+                          evaluation.completeness,
+                        ],
+                        [
+                          "Relevant",
+                          evaluation.relevance,
+                        ],
+                        [
+                          "Structure",
+                          evaluation.structure,
+                        ],
+                      ].map(
+                        ([label, value]) => (
+                          <div
+                            key={
+                              label as string
+                            }
+                            className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-3 text-center"
+                          >
+                            <p className="text-[9px] uppercase text-zinc-600">
+                              {
+                                label as string
+                              }
+                            </p>
+
+                            <p className="mt-1 text-lg font-semibold">
+                              {
+                                value as number
+                              }
+                            </p>
+                          </div>
+                        ),
+                      )}
+                    </div>
+
+                    <div className="mt-6 grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-xl border border-emerald-400/10 bg-emerald-400/[0.03] p-4">
+                        <p className="text-xs font-semibold text-emerald-300">
+                          Strengths
+                        </p>
+
+                        <ul className="mt-3 space-y-2">
+                          {evaluation.strengths.map(
+                            (item) => (
+                              <li
+                                key={item}
+                                className="text-xs leading-5 text-zinc-400"
+                              >
+                                • {item}
+                              </li>
+                            ),
+                          )}
+                        </ul>
+                      </div>
+
+                      <div className="rounded-xl border border-amber-400/10 bg-amber-400/[0.03] p-4">
+                        <p className="text-xs font-semibold text-amber-300">
+                          Improve
+                        </p>
+
+                        <ul className="mt-3 space-y-2">
+                          {evaluation.improvements.map(
+                            (item) => (
+                              <li
+                                key={item}
+                                className="text-xs leading-5 text-zinc-400"
+                              >
+                                • {item}
+                              </li>
+                            ),
+                          )}
+                        </ul>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={
+                        nextQuestion
+                      }
+                      className="primary-button mt-8 w-full rounded-xl px-6 py-4 text-sm font-semibold"
+                    >
+                      {currentIndex ===
+                      plan.questions
+                        .length -
+                        1
+                        ? "Finish Mock Interview →"
+                        : "Next Question →"}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="mt-5 flex items-center justify-between gap-4">
+                <p className="text-[11px] text-zinc-600">
+                  Your mock progress is
+                  automatically saved in this
+                  browser session.
+                </p>
+
+                <button
+                  type="button"
+                  onClick={
+                    resetMockSession
+                  }
+                  className="shrink-0 text-[11px] text-zinc-600 underline-offset-4 hover:text-rose-300 hover:underline"
+                >
+                  Reset mock
+                </button>
+              </div>
+            </>
+          )}
 
         {finished && (
           <div className="text-center">
@@ -851,7 +1581,9 @@ export default function MockInterviewPage() {
               </p>
 
               <p className="mt-2 text-sm text-zinc-600">
-                Based on {scores.length} evaluated answers
+                Based on{" "}
+                {scores.length}{" "}
+                evaluated answers
               </p>
 
               <div className="mt-8 grid grid-cols-2 gap-3">
@@ -869,6 +1601,17 @@ export default function MockInterviewPage() {
                   View Readiness →
                 </Link>
               </div>
+
+              <button
+                type="button"
+                onClick={
+                  resetMockSession
+                }
+                className="mt-5 text-xs text-zinc-600 underline-offset-4 hover:text-rose-300 hover:underline"
+              >
+                Delete session & start
+                again
+              </button>
             </div>
           </div>
         )}

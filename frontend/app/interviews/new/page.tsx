@@ -199,7 +199,7 @@ router.refresh();
           </h1>
 
           <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500">
-            Give InterviewPilot the role and your actual experience. Both will
+            Give Curion AI the role and your actual experience. Both will
             become part of your personalized interview model.
           </p>
         </div>
@@ -216,7 +216,7 @@ router.refresh();
                 </label>
 
                 <p className="mt-1 text-xs text-zinc-600">
-                  The position you're interviewing for.
+                  The position you&apos;re interviewing for.
                 </p>
 
                 <input
@@ -237,7 +237,7 @@ router.refresh();
                 </label>
 
                 <p className="mt-1 text-xs text-zinc-600">
-                  The company you're interviewing with.
+                  The company you&apos;re interviewing with.
                 </p>
 
                 <input

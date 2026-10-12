@@ -9,7 +9,6 @@ from fastapi import (
 )
 from pydantic import BaseModel
 
-from app.ai.gemini import client, MODEL_NAME
 from app.core.supabase import supabase
 from app.schemas.mock import (
     MockEvaluation,
@@ -17,6 +16,7 @@ from app.schemas.mock import (
 )
 from app.services.mock import (
     evaluate_mock_answer,
+    evaluate_mock_voice_answer,
     generate_mock_interview,
 )
 
@@ -35,6 +35,11 @@ class MockAnswerSaveRequest(BaseModel):
     evaluation: dict
 
 
+def get_interview_status(completed: bool) -> str:
+    """Return the parent interview status for the mock session."""
+    return "completed" if completed else "in_progress"
+
+
 @router.post(
     "/{interview_id}/mock/start",
     response_model=MockInterviewPlan,
@@ -43,23 +48,55 @@ async def start_mock_interview(
     interview_id: str,
 ):
     try:
+        # Confirm the interview exists.
+        interview_result = (
+            supabase.table("interviews")
+            .select("id")
+            .eq("id", interview_id)
+            .maybe_single()
+            .execute()
+        )
+
+        if not interview_result.data:
+            raise ValueError("Interview not found.")
+
+        # Generate the plan.
         plan = await generate_mock_interview(
             interview_id
         )
 
-        # Start a fresh mock session for this interview.
-        supabase.table(
-            "mock_interview_sessions"
-        ).upsert(
-            {
-                "interview_id": interview_id,
-                "scores": [],
-                "evaluations": [],
-                "final_score": None,
-                "completed": False,
-            },
-            on_conflict="interview_id",
-        ).execute()
+        # Preserve an existing session and its saved answers.
+        session_result = (
+            supabase.table("mock_interview_sessions")
+            .select("id, completed")
+            .eq("interview_id", interview_id)
+            .maybe_single()
+            .execute()
+        )
+
+        session = session_result.data
+
+        if not session:
+            # Create a session only if one doesn't exist.
+            supabase.table(
+                "mock_interview_sessions"
+            ).insert(
+                {
+                    "interview_id": interview_id,
+                    "scores": [],
+                    "evaluations": [],
+                    "final_score": None,
+                    "completed": False,
+                }
+            ).execute()
+
+        elif session.get("completed") is True:
+            # Keep a completed mock reflected on its interview.
+            supabase.table("interviews").update(
+                {"status": "completed"}
+            ).eq(
+                "id", interview_id
+            ).execute()
 
         return plan
 
@@ -98,77 +135,13 @@ async def evaluate_mock_interview_answer(
                     "Voice recording is empty."
                 )
 
-            from google.genai import types
-            import json
-
-            prompt = f"""
-You are evaluating a candidate's spoken answer during
-a live technical interview.
-
-QUESTION:
-{question}
-
-Evaluate the actual spoken content only.
-
-Evaluate:
-
-1. Technical accuracy
-2. Completeness
-3. Relevance to the question
-4. Structure and clarity of the answer
-
-Return:
-
-- transcript
-- technical_accuracy
-- completeness
-- relevance
-- structure
-- overall_score
-- strengths
-- improvements
-- missing_concepts
-- better_answer
-
-Do not infer personality, intelligence, confidence,
-mental state, or other traits.
-
-Do not penalize the candidate merely because the answer
-was spoken rather than typed.
-
-Return ONLY valid JSON.
-"""
-
-            response = await client.aio.models.generate_content(
-                model=MODEL_NAME,
-                contents=[
-                    prompt,
-                    types.Part.from_bytes(
-                        data=audio_bytes,
-                        mime_type=(
-                            audio.content_type
-                            or "audio/webm"
-                        ),
-                    ),
-                ],
-                config={
-                    "response_mime_type": "application/json",
-                    "response_schema": MockEvaluation,
-                    "temperature": 0.2,
-                },
-            )
-
-            if not response.text:
-                raise RuntimeError(
-                    "Gemini returned an empty evaluation."
-                )
-
-            data = json.loads(
-                response.text
-            )
-
-            return MockEvaluation.model_validate(
-                data
+            return await evaluate_mock_voice_answer(
+                interview_id=interview_id,
+                question=question,
+                audio_bytes=audio_bytes,
+                content_type=(
+                    audio.content_type or "audio/webm"
+                ),
             )
 
         if not answer.strip():
@@ -206,22 +179,30 @@ async def save_mock_answer(
     payload: MockAnswerSaveRequest,
 ):
     try:
-        if payload.score < 0 or payload.score > 100:
+        if not 0 <= payload.score <= 100:
             raise ValueError(
                 "Mock answer score must be between 0 and 100."
             )
 
+        # Confirm the interview exists.
+        interview_result = (
+            supabase.table("interviews")
+            .select("id")
+            .eq("id", interview_id)
+            .maybe_single()
+            .execute()
+        )
+
+        if not interview_result.data:
+            raise ValueError("Interview not found.")
+
+        # Load the existing mock session.
         session_result = (
-            supabase.table(
-                "mock_interview_sessions"
-            )
+            supabase.table("mock_interview_sessions")
             .select(
                 "id, scores, evaluations, completed"
             )
-            .eq(
-                "interview_id",
-                interview_id,
-            )
+            .eq("interview_id", interview_id)
             .maybe_single()
             .execute()
         )
@@ -231,23 +212,35 @@ async def save_mock_answer(
         if not session:
             raise ValueError(
                 "Mock interview session not found. "
-                "Please restart the mock interview."
+                "Please start the mock interview first."
             )
 
-        scores = session.get(
-            "scores"
-        ) or []
-
-        evaluations = session.get(
-            "evaluations"
-        ) or []
-
-        scores = list(scores)
-        evaluations = list(evaluations)
-
-        scores.append(
-            payload.score
+        # Do not append duplicate answers after completion.
+        scores = list(session.get("scores") or [])
+        evaluations = list(
+            session.get("evaluations") or []
         )
+
+        if session.get("completed") is True:
+            return {
+                "status": "already_completed",
+                "interview_id": interview_id,
+                "answer_number": len(scores),
+                "final_score": (
+                    round(sum(scores) / len(scores))
+                    if scores
+                    else None
+                ),
+                "completed": True,
+            }
+
+        # Enforce the six-question limit.
+        if len(scores) >= 6:
+            raise ValueError(
+                "All six mock interview answers have already been saved."
+            )
+
+        scores.append(payload.score)
 
         evaluations.append(
             {
@@ -265,10 +258,9 @@ async def save_mock_answer(
 
         completed = len(scores) >= 6
 
-        (
-            supabase.table(
-                "mock_interview_sessions"
-            )
+        # Save mock-session progress first.
+        update_result = (
+            supabase.table("mock_interview_sessions")
             .update(
                 {
                     "scores": scores,
@@ -277,12 +269,23 @@ async def save_mock_answer(
                     "completed": completed,
                 }
             )
-            .eq(
-                "interview_id",
-                interview_id,
-            )
+            .eq("interview_id", interview_id)
             .execute()
         )
+
+        if not update_result.data:
+            raise RuntimeError(
+                "Mock session progress could not be confirmed."
+            )
+
+        # Synchronize the parent interview status.
+        supabase.table("interviews").update(
+            {
+                "status": get_interview_status(completed)
+            }
+        ).eq(
+            "id", interview_id
+        ).execute()
 
         return {
             "status": "saved",

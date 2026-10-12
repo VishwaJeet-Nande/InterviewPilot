@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -55,12 +55,15 @@ export default function PreparationPage({
   const [selectedModule, setSelectedModule] =
     useState<Module | null>(null);
 
-  useEffect(() => {
-    params.then(({ id }) => {
-      setInterviewId(id);
-      loadPreparation(id);
-    });
-  }, [params]);
+  /*
+   * Prevent duplicate preparation-generation requests
+   * caused by React Strict Mode / development re-renders.
+   *
+   * We store the interview ID rather than a simple boolean
+   * so navigating to another interview still works correctly.
+   */
+  const preparationRequestStarted =
+    useRef<string | null>(null);
 
   async function loadPreparation(id: string) {
     setLoading(true);
@@ -102,6 +105,36 @@ export default function PreparationPage({
     }
   }
 
+  useEffect(() => {
+    let cancelled = false;
+
+    params.then(({ id }) => {
+      if (cancelled) {
+        return;
+      }
+
+      setInterviewId(id);
+
+      /*
+       * React development mode can execute effects twice.
+       * Only allow one AI preparation request per interview.
+       */
+      if (
+        preparationRequestStarted.current === id
+      ) {
+        return;
+      }
+
+      preparationRequestStarted.current = id;
+
+      void loadPreparation(id);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [params]);
+
   function priorityClass(priority: string) {
     if (priority === "HIGH") {
       return "border-rose-400/20 bg-rose-400/[0.05] text-rose-300";
@@ -127,7 +160,7 @@ export default function PreparationPage({
           </h1>
 
           <p className="mt-3 text-sm text-zinc-500">
-            InterviewPilot is analyzing your Interview DNA,
+            Curion is analyzing your Interview DNA,
             role requirements, risks, and experience.
           </p>
 
@@ -151,10 +184,11 @@ export default function PreparationPage({
 
             <button
               type="button"
-              onClick={() =>
-                interviewId &&
-                loadPreparation(interviewId)
-              }
+              onClick={() => {
+                if (interviewId) {
+                  void loadPreparation(interviewId);
+                }
+              }}
               className="primary-button mt-6 rounded-xl px-5 py-3 text-sm font-semibold"
             >
               Try again
@@ -176,14 +210,14 @@ export default function PreparationPage({
             >
               <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04]">
                 <span className="text-xs font-bold text-violet-300">
-                  IP
+                  CA
                 </span>
               </div>
 
               <span className="font-semibold">
-                Interview
+                Curion
                 <span className="text-violet-400">
-                  Pilot
+                  AI
                 </span>
               </span>
             </Link>
@@ -196,7 +230,6 @@ export default function PreparationPage({
             </Link>
           </div>
 
-          {/* PRODUCT NAVIGATION */}
           <nav className="flex flex-wrap gap-2 border-t border-white/[0.05] py-3">
             <Link
               href={`/interviews/${interviewId}/prepare`}
@@ -439,11 +472,12 @@ export default function PreparationPage({
                           className="group flex gap-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4 transition hover:border-violet-400/20 hover:bg-violet-400/[0.03]"
                         >
                           {resource.thumbnail ? (
-                            <img
-                              src={resource.thumbnail}
-                              alt=""
-                              className="h-20 w-32 rounded-lg object-cover"
-                            />
+                             // eslint-disable-next-line @next/next/no-img-element
+                             <img
+                               src={resource.thumbnail}
+                               alt=""
+                               className="h-20 w-32 rounded-lg object-cover"
+                             />
                           ) : (
                             <div className="flex h-20 w-32 shrink-0 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-xl">
                               ▶
@@ -469,7 +503,6 @@ export default function PreparationPage({
                   </div>
                 </div>
 
-                {/* PRACTICE QUESTIONS */}
                 <div className="card p-6 sm:p-8">
                   <p className="text-xs uppercase tracking-[0.16em] text-violet-400">
                     Practice

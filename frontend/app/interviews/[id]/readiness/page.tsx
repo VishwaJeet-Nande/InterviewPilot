@@ -2,7 +2,12 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -207,9 +212,8 @@ export default function ReadinessPage() {
   const [error, setError] =
     useState("");
 
-  async function loadReadiness(
-    showRefreshing = false,
-  ) {
+  const loadReadiness = useCallback(
+  async (showRefreshing = false) => {
     if (showRefreshing) {
       setRefreshing(true);
     } else {
@@ -230,8 +234,7 @@ export default function ReadinessPage() {
         },
       );
 
-      const result =
-        await response.json();
+      const result = await response.json();
 
       if (!response.ok) {
         throw new Error(
@@ -251,13 +254,23 @@ export default function ReadinessPage() {
       setLoading(false);
       setRefreshing(false);
     }
+  },
+  [interviewId],
+);
+
+useEffect(() => {
+  if (!interviewId) {
+    return;
   }
 
-  useEffect(() => {
-    if (interviewId) {
-      loadReadiness();
-    }
-  }, [interviewId]);
+  const frame = requestAnimationFrame(() => {
+    void loadReadiness();
+  });
+
+  return () => {
+    cancelAnimationFrame(frame);
+  };
+}, [interviewId, loadReadiness]);
 
   const weakestArea = useMemo(() => {
     if (!data?.areas?.length) {
@@ -918,7 +931,7 @@ export default function ReadinessPage() {
               </p>
 
               <h2 className="mt-2 text-2xl font-semibold">
-                What InterviewPilot wants you to do next
+                What Curion AI wants you to do next
               </h2>
 
               <p className="mt-2 max-w-2xl text-xs leading-5 text-zinc-600">

@@ -127,9 +127,7 @@ def _calculate_preparation_progress(
         if attempt.get("question")
     }
 
-    questions_practiced = len(
-        unique_questions
-    )
+    questions_practiced = len(unique_questions)
 
     scores = [
         _clamp(attempt.get("score"))
@@ -158,16 +156,10 @@ def _calculate_preparation_progress(
     )
 
     return {
-        "score": _clamp(
-            preparation_score
-        ),
-        "questions_practiced": (
-            questions_practiced
-        ),
+        "score": _clamp(preparation_score),
+        "questions_practiced": questions_practiced,
         "average_score": average_score,
-        "completion_percentage": (
-            completion_percentage
-        ),
+        "completion_percentage": completion_percentage,
     }
 
 
@@ -238,7 +230,7 @@ def _build_recommended_actions(
     if not mock_completed:
         actions.append(
             "Complete a full AI mock interview so "
-            "InterviewPilot can measure your demonstrated "
+            "Curion can measure your demonstrated "
             "interview performance."
         )
 
@@ -399,7 +391,17 @@ async def calculate_readiness(
         .execute()
     )
 
-    interview = interview_result.data
+    interview_data = (
+        getattr(
+            interview_result,
+            "data",
+            None,
+        )
+        if interview_result is not None
+        else None
+    )
+
+    interview = interview_data or {}
 
     if not interview:
         raise ValueError(
@@ -434,7 +436,17 @@ async def calculate_readiness(
         .execute()
     )
 
-    dna = dna_result.data
+    dna_data = (
+        getattr(
+            dna_result,
+            "data",
+            None,
+        )
+        if dna_result is not None
+        else None
+    )
+
+    dna = dna_data or {}
 
     if not dna:
         raise ValueError(
@@ -460,7 +472,17 @@ async def calculate_readiness(
         .execute()
     )
 
-    mock = mock_result.data or {}
+    mock_data = (
+        getattr(
+            mock_result,
+            "data",
+            None,
+        )
+        if mock_result is not None
+        else None
+    )
+
+    mock = mock_data or {}
 
     mock_completed = bool(
         mock.get("completed")
@@ -518,8 +540,18 @@ async def calculate_readiness(
         .execute()
     )
 
+    practice_data = (
+        getattr(
+            practice_result,
+            "data",
+            None,
+        )
+        if practice_result is not None
+        else None
+    )
+
     practice_attempts = (
-        practice_result.data or []
+        practice_data or []
     )
 
     preparation_progress = (

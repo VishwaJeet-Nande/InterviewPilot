@@ -4,15 +4,15 @@ from urllib.parse import quote_plus
 
 import httpx
 from dotenv import load_dotenv
-from google.genai import types
 
-from app.ai.gemini import client, MODEL_NAME
+from app.ai.gemini import client, generate_structured
 from app.core.supabase import supabase
 from app.schemas.preparation import (
     AnswerEvaluation,
     PreparationPlan,
     YouTubeResource,
 )
+from app.services.interview_pipeline import generate_dna_for_interview
 from app.services.resume_parser import extract_pdf_text
 
 
@@ -22,10 +22,15 @@ load_dotenv()
 RESUME_BUCKET = "resumes"
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
+WHISPER_MODEL = "whisper-large-v3-turbo"
+
 
 async def _get_interview_context(
     interview_id: str,
 ):
+    # ---------------------------------------------------------
+    # 1. Fetch interview
+    # ---------------------------------------------------------
     interview_result = (
         supabase
         .table("interviews")
@@ -34,17 +39,22 @@ async def _get_interview_context(
             "job_description, resume_id"
         )
         .eq("id", interview_id)
-        .single()
         .execute()
     )
 
-    interview = interview_result.data
+    interviews = interview_result.data or []
 
-    if not interview:
-        raise ValueError(
-            "Interview not found."
-        )
+    if not interviews:
+        raise ValueError("Interview not found.")
 
+    interview = interviews[0]
+
+    # ---------------------------------------------------------
+    # 2. Fetch Interview DNA
+    #
+    # A new interview may not have DNA yet.
+    # Generate it automatically if necessary.
+    # ---------------------------------------------------------
     dna_result = (
         supabase
         .table("interview_dna")
@@ -59,50 +69,116 @@ async def _get_interview_context(
             "interview_id",
             interview_id,
         )
-        .single()
         .execute()
     )
 
-    dna = dna_result.data
+    dna_rows = dna_result.data or []
 
-    if not dna:
+    if dna_rows:
+        dna = dna_rows[0]
+
+    else:
+        await generate_dna_for_interview(
+            interview_id
+        )
+
+        dna_result = (
+            supabase
+            .table("interview_dna")
+            .select(
+                "overall_match, technical_match, backend_match, "
+                "ai_ml_match, cloud_match, database_match, "
+                "system_design_match, behavioral_match, "
+                "likely_focus, high_risk_areas, "
+                "medium_risk_areas, strong_areas"
+            )
+            .eq(
+                "interview_id",
+                interview_id,
+            )
+            .execute()
+        )
+
+        dna_rows = dna_result.data or []
+
+        if not dna_rows:
+            raise RuntimeError(
+                "Interview DNA was generated but could not be loaded."
+            )
+
+        dna = dna_rows[0]
+
+    # ---------------------------------------------------------
+    # 3. Fetch resume record
+    # ---------------------------------------------------------
+    resume_id = interview.get("resume_id")
+
+    if not resume_id:
         raise ValueError(
-            "Interview DNA has not been generated yet."
+            "No resume is attached to this interview."
         )
 
     resume_result = (
         supabase
         .table("resumes")
         .select(
-            "file_path, file_name"
+            "id, file_path, file_name, file_type"
         )
         .eq(
             "id",
-            interview["resume_id"],
+            resume_id,
         )
-        .single()
         .execute()
     )
 
-    resume = resume_result.data
+    resumes = resume_result.data or []
 
-    if not resume:
+    if not resumes:
         raise ValueError(
             "Resume record not found."
         )
 
-    file_bytes = (
-        supabase
-        .storage
-        .from_(RESUME_BUCKET)
-        .download(
-            resume["file_path"]
-        )
-    )
+    resume = resumes[0]
 
-    resume_text = extract_pdf_text(
-        file_bytes
-    )
+    file_path = resume.get("file_path")
+
+    if not file_path:
+        raise ValueError(
+            "Resume file path is missing."
+        )
+
+    # ---------------------------------------------------------
+    # 4. Download resume from private Supabase Storage
+    # ---------------------------------------------------------
+    try:
+        file_bytes = (
+            supabase
+            .storage
+            .from_(RESUME_BUCKET)
+            .download(file_path)
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Unable to download the resume from storage."
+        ) from exc
+
+    # ---------------------------------------------------------
+    # 5. Extract resume text
+    # ---------------------------------------------------------
+    try:
+        resume_text = extract_pdf_text(
+            file_bytes
+        )
+    except Exception as exc:
+        raise ValueError(
+            "Unable to extract text from the uploaded resume. "
+            "Please make sure the uploaded resume is a readable PDF."
+        ) from exc
+
+    if not resume_text.strip():
+        raise ValueError(
+            "No readable text was found in the resume."
+        )
 
     return (
         interview,
@@ -123,9 +199,7 @@ async def _search_youtube(
     if not YOUTUBE_API_KEY:
         return [
             YouTubeResource(
-                title=(
-                    f"Search YouTube: {query}"
-                ),
+                title=f"Search YouTube: {query}",
                 channel="YouTube",
                 url=fallback_url,
                 thumbnail="",
@@ -147,6 +221,7 @@ async def _search_youtube(
         async with httpx.AsyncClient(
             timeout=15.0
         ) as http_client:
+
             response = await http_client.get(
                 "https://www.googleapis.com/youtube/v3/search",
                 params=params,
@@ -159,9 +234,7 @@ async def _search_youtube(
     except Exception:
         return [
             YouTubeResource(
-                title=(
-                    f"Search YouTube: {query}"
-                ),
+                title=f"Search YouTube: {query}",
                 channel="YouTube",
                 url=fallback_url,
                 thumbnail="",
@@ -223,9 +296,7 @@ async def _search_youtube(
     if not resources:
         resources.append(
             YouTubeResource(
-                title=(
-                    f"Search YouTube: {query}"
-                ),
+                title=f"Search YouTube: {query}",
                 channel="YouTube",
                 url=fallback_url,
                 thumbnail="",
@@ -245,8 +316,8 @@ async def generate_preparation_plan(
         )
     )
 
-    prompt = f"""
-You are InterviewPilot's Personalized Preparation Engine.
+    system_prompt = """
+You are Curion's Personalized Preparation Engine.
 
 Create a focused interview preparation roadmap for this
 specific candidate and role.
@@ -282,6 +353,10 @@ Create 4-6 modules.
 Do not generate YouTube URLs yourself.
 Only generate the search query.
 
+Return only the structured response.
+"""
+
+    user_prompt = f"""
 INTERVIEW:
 
 Role:
@@ -300,29 +375,21 @@ INTERVIEW DNA:
 {json.dumps(dna, indent=2)}
 """
 
-    response = await client.aio.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=PreparationPlan,
-            temperature=0.25,
-        ),
-    )
-
-    if not response.text:
-        raise RuntimeError(
-            "Gemini returned an empty preparation plan."
-        )
-
-    plan = PreparationPlan.model_validate_json(
-        response.text
+    plan = await generate_structured(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        response_model=PreparationPlan,
     )
 
     for module in plan.modules:
-        module.resources = await _search_youtube(
-            module.youtube_query
-        )
+       if not module.youtube_query.strip():
+           module.youtube_query = (
+               f"{module.title} interview preparation tutorial"
+           )
+
+       module.resources = await _search_youtube(
+           module.youtube_query
+       )
 
     return plan
 
@@ -340,8 +407,8 @@ async def evaluate_text_answer(
         )
     )
 
-    prompt = f"""
-You are InterviewPilot's Interview Answer Evaluator.
+    system_prompt = """
+You are Curion's Interview Answer Evaluator.
 
 Evaluate the candidate's answer to a specific interview
 question.
@@ -367,6 +434,10 @@ Identify missing concepts.
 Provide a better answer direction, but do not fabricate
 candidate experience.
 
+Return only the structured response.
+"""
+
+    user_prompt = f"""
 ROLE:
 {interview["job_title"]}
 
@@ -389,23 +460,10 @@ CANDIDATE ANSWER:
 {answer}
 """
 
-    response = await client.aio.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=AnswerEvaluation,
-            temperature=0.2,
-        ),
-    )
-
-    if not response.text:
-        raise RuntimeError(
-            "Gemini returned an empty answer evaluation."
-        )
-
-    return AnswerEvaluation.model_validate_json(
-        response.text
+    return await generate_structured(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        response_model=AnswerEvaluation,
     )
 
 
@@ -417,20 +475,57 @@ async def evaluate_voice_answer(
     mime_type: str,
 ) -> AnswerEvaluation:
 
+    if not audio_bytes:
+        raise ValueError(
+            "Voice answer audio is empty."
+        )
+
     interview, dna, resume_text = (
         await _get_interview_context(
             interview_id
         )
     )
 
-    prompt = f"""
-You are InterviewPilot's Interview Answer Evaluator.
+    # ---------------------------------------------------------
+    # 1. Transcribe voice with Groq Whisper
+    # ---------------------------------------------------------
+    try:
+        transcription = await client.audio.transcriptions.create(
+            file=(
+                "answer.webm",
+                audio_bytes,
+            ),
+            model=WHISPER_MODEL,
+            response_format="json",
+            temperature=0.0,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Voice transcription failed: {exc}"
+        ) from exc
+
+    transcript = getattr(
+        transcription,
+        "text",
+        None,
+    )
+
+    if not transcript or not transcript.strip():
+        raise RuntimeError(
+            "Voice transcription returned no text."
+        )
+
+    # ---------------------------------------------------------
+    # 2. Evaluate the transcript with GPT-OSS 120B
+    # ---------------------------------------------------------
+    system_prompt = """
+You are Curion's Interview Answer Evaluator.
 
 The candidate answered the interview question using voice.
 
-First transcribe the spoken answer accurately.
+The spoken answer has already been transcribed.
 
-Then evaluate the answer against:
+Evaluate the CONTENT of the transcript against:
 - the target role
 - the company
 - the job description
@@ -447,14 +542,17 @@ Evaluate:
 Do not infer personality, intelligence, competence, or mental
 state from the voice.
 
-Focus on the content of the answer and observable answer
-structure.
+Focus only on the answer content and observable structure.
 
 Identify missing concepts.
 
 Provide a better answer direction without inventing
 candidate experience.
 
+Return only the structured response.
+"""
+
+    user_prompt = f"""
 ROLE:
 {interview["job_title"]}
 
@@ -472,34 +570,18 @@ INTERVIEW DNA:
 
 QUESTION:
 {question}
+
+TRANSCRIBED CANDIDATE ANSWER:
+{transcript}
 """
 
-    audio_part = types.Part.from_bytes(
-        data=audio_bytes,
-        mime_type=mime_type,
+    evaluation = await generate_structured(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        response_model=AnswerEvaluation,
     )
 
-    response = await client.aio.models.generate_content(
-        model=MODEL_NAME,
-        contents=[
-            prompt,
-            audio_part,
-        ],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=AnswerEvaluation,
-            temperature=0.2,
-        ),
-    )
-
-    if not response.text:
-        raise RuntimeError(
-            "Gemini returned an empty voice evaluation."
-        )
-
-    return AnswerEvaluation.model_validate_json(
-        response.text
-    )
+    return evaluation
 
 
 async def save_practice_attempt(
@@ -530,15 +612,20 @@ async def save_practice_attempt(
             "Practice score must be between 0 and 100."
         )
 
-    # Convert Pydantic AnswerEvaluation into
-    # a JSON-serializable dictionary before
-    # sending it to Supabase.
-    if isinstance(evaluation, AnswerEvaluation):
+    if isinstance(
+        evaluation,
+        AnswerEvaluation,
+    ):
         evaluation_data = evaluation.model_dump(
             mode="json"
         )
-    elif isinstance(evaluation, dict):
+
+    elif isinstance(
+        evaluation,
+        dict,
+    ):
         evaluation_data = evaluation
+
     else:
         raise ValueError(
             "Practice evaluation has an invalid format."

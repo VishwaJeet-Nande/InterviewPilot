@@ -1,25 +1,150 @@
+import asyncio
 import json
 import os
+from typing import Any, Type
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
-
-from app.schemas.interview import InterviewDNA
-
+from groq import AsyncGroq
+from pydantic import BaseModel
 
 load_dotenv()
 
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GROQ_API_KEY:
+    raise RuntimeError(
+        "GROQ_API_KEY is missing. Add it to backend/.env."
+    )
 
-if not GEMINI_API_KEY:
-    raise RuntimeError("GEMINI_API_KEY is not configured.")
+client = AsyncGroq(api_key=GROQ_API_KEY)
+
+MODEL_NAME = "openai/gpt-oss-120b"
+
+MAX_RETRIES = 3
+RETRY_DELAYS = (2, 5, 10)
 
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+def _is_retryable_error(exc: Exception) -> bool:
+    message = str(exc).lower()
 
-MODEL_NAME = "gemini-3.5-flash-lite"
+    retryable_markers = (
+        "429",
+        "rate limit",
+        "too many requests",
+        "500",
+        "502",
+        "503",
+        "504",
+        "timeout",
+        "timed out",
+        "temporarily unavailable",
+        "service unavailable",
+        "connection",
+        "internal server error",
+    )
+
+    return any(marker in message for marker in retryable_markers)
+
+
+def _schema_for_model(model: Type[BaseModel]) -> dict[str, Any]:
+    """
+    Convert a Pydantic model into JSON Schema for Groq structured output.
+    """
+
+    schema = model.model_json_schema()
+
+    # Groq best-effort structured outputs are more tolerant than strict mode.
+    # We intentionally keep this non-strict because some of Curion's existing
+    # Pydantic schemas contain optional/default fields.
+    return schema
+
+
+async def generate_structured(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    response_model: Type[BaseModel],
+    model_name: str = MODEL_NAME,
+) -> BaseModel:
+    """
+    Generate a structured response from Groq and validate it with Pydantic.
+
+    This function is intentionally provider-focused so the rest of Curion
+    doesn't need to know whether the underlying model is Gemini, Groq,
+    OpenRouter, etc.
+    """
+
+    schema = _schema_for_model(response_model)
+
+    last_error = None
+
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            response = await client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system_prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": user_prompt,
+                    },
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": response_model.__name__.lower(),
+                        "schema": schema,
+                    },
+                },
+                temperature=0.2,
+            )
+
+            content = response.choices[0].message.content
+
+            if not content:
+                raise RuntimeError(
+                    "Groq returned an empty response."
+                )
+
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    "Groq returned invalid JSON."
+                ) from exc
+
+            try:
+                return response_model.model_validate(data)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Groq response did not match the expected "
+                    f"{response_model.__name__} schema: {exc}"
+                ) from exc
+
+        except Exception as exc:
+            last_error = exc
+
+            if attempt >= MAX_RETRIES or not _is_retryable_error(exc):
+                raise RuntimeError(
+                    f"Groq AI generation failed: {exc}"
+                ) from exc
+
+            delay = RETRY_DELAYS[min(attempt, len(RETRY_DELAYS) - 1)]
+
+            print(
+                f"Groq temporary failure "
+                f"(attempt {attempt + 1}/{MAX_RETRIES + 1}). "
+                f"Retrying in {delay}s..."
+            )
+
+            await asyncio.sleep(delay)
+
+    raise RuntimeError(
+        f"Groq AI generation failed: {last_error}"
+    )
 
 
 async def analyze_candidate(
@@ -28,67 +153,43 @@ async def analyze_candidate(
     company_name: str,
     job_description: str,
     resume_text: str,
-) -> InterviewDNA:
+):
+    """
+    Generate Interview DNA from the candidate resume + target job.
+    """
 
-    prompt = f"""
-You are InterviewPilot's Interview Intelligence Engine.
+    from app.schemas.interview import InterviewDNA
 
-Analyze a candidate against a specific job and produce an
-evidence-based Interview DNA profile.
+    system_prompt = """
+You are Curion AI's Interview Intelligence Engine.
 
-IMPORTANT RULES:
+Curion analyzes a candidate's resume against a specific job description.
 
-1. Use ONLY the supplied resume and job description.
-2. Never invent experience, skills, projects, employers,
-   degrees, certifications, or achievements.
-3. All scores must be integers from 0 to 100.
-4. Evaluate each domain independently.
-5. Be realistic and critical.
-6. The purpose is interview preparation, not resume praise.
-7. Identify areas where an interviewer is likely to challenge
-   the candidate.
-8. Prioritize technical areas according to the target role.
-9. Generate topics genuinely relevant to this candidate and job.
-10. High-risk areas are gaps or weaknesses that could materially
-    hurt the candidate during an interview.
-11. Medium-risk areas are meaningful concerns but less severe.
-12. Strong areas must be supported by evidence in the resume.
-13. likely_focus must contain the most probable interview topics.
+Your task is to produce an evidence-based Interview DNA analysis.
 
-SCORING:
+Evaluate the candidate only from the information provided.
 
-overall_match:
-Overall suitability of the candidate for this specific job.
+Do not invent technologies, experience, employers, projects, certifications,
+or achievements that are not present in the resume.
 
-technical_match:
-Overall technical skill alignment with the job requirements.
+Identify:
+- overall role match
+- technical match
+- backend match
+- AI/ML match
+- cloud match
+- database match
+- system design match
+- behavioral readiness
+- likely interview focus
+- high-risk areas
+- medium-risk areas
+- strong areas
 
-backend_match:
-Alignment with backend engineering, APIs, services,
-FastAPI, microservices, scalability, and related requirements.
+The output must be structured according to the provided schema.
+"""
 
-ai_ml_match:
-Alignment with AI, machine learning, NLP, LLM, RAG,
-agents, inference, and related requirements.
-
-cloud_match:
-Alignment with cloud platforms, containers, Kubernetes,
-deployment, infrastructure, and cloud-native requirements.
-
-database_match:
-Alignment with SQL, PostgreSQL, MongoDB, vector databases,
-data modeling, optimization, and related requirements.
-
-system_design_match:
-Alignment with architecture, distributed systems,
-scalability, reliability, security, and system design.
-
-behavioral_match:
-Evidence of communication, collaboration, ownership,
-leadership, problem-solving, and professional maturity.
-
-Return ONLY the structured JSON matching the provided schema.
-
+    user_prompt = f"""
 TARGET ROLE:
 {job_title}
 
@@ -100,26 +201,27 @@ JOB DESCRIPTION:
 
 CANDIDATE RESUME:
 {resume_text}
+
+Analyze the candidate for this exact role.
+
+Pay particular attention to:
+
+1. Explicit technology overlap.
+2. Missing technologies explicitly requested by the job.
+3. Depth of experience versus keyword-only overlap.
+4. Relevant projects.
+5. Backend engineering capability.
+6. AI/ML capability.
+7. Cloud/platform exposure.
+8. Database knowledge.
+9. System design exposure.
+10. Behavioral/interview risk areas.
+
+Return only the structured analysis.
 """
 
-    response = await client.aio.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=InterviewDNA,
-            temperature=0.2,
-        ),
+    return await generate_structured(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        response_model=InterviewDNA,
     )
-
-    if not response.text:
-        raise RuntimeError("Gemini returned an empty response.")
-
-    try:
-        data = json.loads(response.text)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            "Gemini returned invalid JSON."
-        ) from exc
-
-    return InterviewDNA.model_validate(data)

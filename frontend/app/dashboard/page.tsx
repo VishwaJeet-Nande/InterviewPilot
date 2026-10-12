@@ -88,9 +88,9 @@ export default async function DashboardPage() {
         : 0;
 
     const { data: mockRows } = await supabase
-      .from("mock_interview_sessions")
-      .select("interview_id, completed")
-      .in("interview_id", interviewIds);
+       .from("mock_interview_sessions")
+       .select("interview_id, completed")
+       .in("interview_id", interviewIds);
 
     mockCompletedCount =
       mockRows?.filter((row) => row.completed === true).length ?? 0;

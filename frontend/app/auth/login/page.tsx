@@ -7,6 +7,7 @@ import {
   useSearchParams,
 } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
+import Image from "next/image";
 
 function GoogleIcon() {
   return (
@@ -111,7 +112,7 @@ function LoginForm() {
           href="/"
           className="mb-8 flex items-center justify-center"
         >
-          <img
+          <Image
             src="/branding/curion-ai-dark.png"
             alt="Curion AI"
             className="h-11 w-auto object-contain"
@@ -231,7 +232,7 @@ function LoginForm() {
           </form>
 
           <div className="mt-7 border-t border-white/[0.06] pt-6 text-center text-sm text-zinc-500">
-            Don't have an account?{" "}
+            Don&apos;t have an account?{" "}
             <Link
               href="/auth/signup"
               className="font-medium text-violet-400 hover:text-violet-300"

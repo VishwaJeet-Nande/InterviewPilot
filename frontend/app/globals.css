@@ -437,3 +437,15 @@ button {
     transform: translateY(0);
   }
 }
+
+/* =========================================================
+   CURION GLOBAL APPLICATION SHELL
+   Legacy interview pages already contain their own
+   Curion AI-era header/footer markup. The global
+   Curion shell owns the real navigation now.
+   ========================================================= */
+
+.curion-route-content > main > header,
+.curion-route-content > main > footer {
+  display: none !important;
+}

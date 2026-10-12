@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import SignOutButton from "@/components/sign-out-button";
@@ -61,10 +62,13 @@ export default function CurionHeader({
           className="group flex items-center"
         >
           <div className="relative h-10 w-[150px] sm:w-[165px]">
-            <img
-              src="/branding/curion-ai-dark.png"
-              alt="Curion AI"
-              className="h-full w-full object-contain object-left"
+            <Image
+               src="/branding/curion-ai-dark.png"
+               alt="Curion AI"
+               width={165}
+               height={40}
+               priority
+               className="h-full w-full object-contain object-left"
             />
           </div>
         </Link>

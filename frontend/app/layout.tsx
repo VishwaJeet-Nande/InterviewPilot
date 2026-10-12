@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import "./globals.css";
 
+import CurionAppShell from "@/components/curion-app-shell";
+
 export const metadata: Metadata = {
   title: {
     default: "Curion — AI Career Intelligence",
@@ -34,7 +36,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body>{children}</body>
+      <body>
+        <CurionAppShell>{children}</CurionAppShell>
+      </body>
     </html>
   );
 }
